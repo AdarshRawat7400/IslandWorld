@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#08141a" />
+    <title>Island World</title>
+    <style>html,body{margin:0;background:#08141a;color:#e9eee9;font-family:Arial,sans-serif}#loading{position:fixed;inset:0;z-index:30;display:grid;place-items:center;background:#08141a;text-align:center;padding:2rem}#loading[hidden]{display:none}</style>
+  </head>
+  <body>
+    <div id="loading" role="status" aria-live="polite">
+      <div><div class="eyebrow">GREYWAKE ISLAND</div><h1>Building the island</h1><p id="loading-detail">Preparing terrain, models, and weather…</p><progress id="loading-progress" aria-label="Asset loading"></progress></div>
+    </div>
+    <main id="game" aria-label="Explorable island world"></main>
+    <div id="vignette" aria-hidden="true"></div>
+    <div id="lighthouse-glare" aria-hidden="true"></div>
+    <div id="hud" hidden>
+      <div class="hud-top"><strong>ISLAND WORLD</strong><span id="weather-label">MIST</span><button id="menu-button" type="button">MENU · ESC</button></div>
+      <div id="place-label">SOUTH LANDING</div>
+      <div id="crosshair" aria-hidden="true">·</div>
+      <div id="interaction" hidden></div>
+      <div id="vehicle-hud" hidden></div>
+      <div id="drone-hud" hidden>DRONE VIEW <span id="drone-altitude"></span></div>
+      <div class="controls-hint">WASD MOVE · M MAP · E TALK / DRIVE · G DRONE · F LIGHT · U AUDIO · ESC MENU</div>
+    </div>
+    <section id="screen" class="screen" aria-label="Island World menu">
+      <div class="screen-card">
+        <div class="eyebrow">AN EXPLORABLE COASTAL WORLD</div>
+        <h1>ISLAND<br><em>WORLD</em></h1>
+        <p>A wild island above the sea. Walk the high cliffs, enter the weathered buildings, drive its roads, and watch storms move across the water. This world is ready for a new game.</p>
+        <button id="start-button" class="primary" type="button">EXPLORE THE ISLAND <span>→</span></button>
+        <div class="settings-grid">
+          <label>WEATHER <select id="weather-select" aria-label="Weather"><option value="auto">Moving weather fronts</option><option value="clear">Clear skies</option><option value="mist">Mist</option><option value="rain">Rain</option><option value="storm">Thunderstorm</option></select></label>
+          <label>TIME <select id="time-select" aria-label="Time of day"><option value="auto">Day and night cycle</option><option value="dawn">Dawn</option><option value="noon">Noon</option><option value="dusk">Dusk</option><option value="night">Night</option></select></label>
+          <label>PIANO <output id="music-value">40%</output><input id="music-volume" type="range" min="0" max="100" step="5" value="40" /></label>
+          <label>SEA <output id="sea-value">100%</output><input id="sea-volume" type="range" min="0" max="100" step="5" value="100" /></label>
+        </div>
+        <p class="smallprint">Desktop: WASD move · mouse look · Shift run · E talk / enter or exit car · G drone · M map · F flashlight · U audio · Esc menu<br>Landscape touch: left stick move · drag right to look · on-screen actions and vehicle pedals</p>
+      </div>
+      <div class="screen-foot">GREYWAKE ISLAND · WORLD FOUNDATION</div>
+    </section>
+    <section id="map-panel" class="panel" hidden aria-label="Island map">
+      <div class="panel-card"><div class="panel-head"><h2>ISLAND MAP</h2><button id="map-close" type="button" aria-label="Close map">×</button></div><div id="map-content"></div><p class="smallprint">Pale marker: your position. Select M or Escape to close.</p></div>
+    </section>
+    <div id="touch-controls" hidden>
+      <div id="touch-look" aria-label="Look around"></div>
+      <div id="touch-stick" aria-label="Movement joystick"><span id="touch-stick-thumb"></span></div>
+      <div class="touch-top"><button type="button" data-touch-action="menu">MENU</button><button type="button" data-touch-action="map">MAP</button><button type="button" data-touch-action="drone" id="touch-drone-toggle">DRONE</button><button type="button" data-touch-action="light">LIGHT</button><button type="button" data-touch-action="audio">AUDIO</button></div>
+      <button id="touch-action" type="button" data-touch-action="interact">USE</button>
+      <div class="touch-drive"><button type="button" data-touch-hold="reverse">REVERSE</button><button type="button" data-touch-hold="brake">BRAKE</button><button type="button" data-touch-hold="throttle">ACCELERATE</button></div>
+      <div class="touch-drone"><button type="button" data-touch-hold="descend">DOWN</button><button type="button" data-touch-hold="ascend">UP</button><button type="button" data-touch-hold="boost">BOOST</button></div>
+    </div>
+    <div id="touch-rotate" hidden>ROTATE TO LANDSCAPE TO EXPLORE</div>
+    <div id="toast" hidden role="status"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

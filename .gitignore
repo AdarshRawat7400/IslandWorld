@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.firebase/
+work/
+
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+__pycache__/
+*.py[cod]
+
+.DS_Store
+Thumbs.db

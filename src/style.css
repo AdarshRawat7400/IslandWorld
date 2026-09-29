@@ -1,0 +1,68 @@
+@import '@fontsource/dm-sans/400.css';
+@import '@fontsource/dm-sans/600.css';
+@import '@fontsource/libre-baskerville/400.css';
+
+:root { font-family: 'DM Sans', sans-serif; color: #e8ece7; background: #07131a; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+button, select, input { font: inherit; }
+button { cursor: pointer; }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #dfc38e; outline-offset: 3px; }
+#game, #game canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+#game canvas { touch-action: none; }
+#vignette { position: fixed; inset: 0; pointer-events: none; background: radial-gradient(ellipse at center, transparent 45%, #0611174a 100%); }
+#lighthouse-glare { position: fixed; inset: 0; z-index: 4; pointer-events: none; opacity: 0; mix-blend-mode: screen; --flare-x: 50%; --flare-y: 50%; background: radial-gradient(circle 180px at var(--flare-x) var(--flare-y), #fff8dbea 0, #ffe2a072 10%, #ffc87025 36%, transparent 100%); }
+#lighthouse-glare::after { content: ''; position: absolute; left: var(--flare-x); top: var(--flare-y); width: min(45vw, 620px); height: 3px; transform: translate(-50%, -50%); background: linear-gradient(90deg, transparent, #fff2ca6b 42%, #fffdf0eb 50%, #fff2ca6b 58%, transparent); filter: blur(2px); }
+.eyebrow { color: #d6bc8d; font-size: .68rem; font-weight: 600; letter-spacing: .32em; text-transform: uppercase; }
+#loading { background: radial-gradient(ellipse at 75% 30%, #3c5857 0, #152c34 38%, #07131a 76%); }
+#loading h1 { font: 400 clamp(2rem, 5vw, 3rem) 'Libre Baskerville', Georgia, serif; }
+#loading p { color: #b7c6c5; }
+#loading progress { width: min(340px, 75vw); height: 6px; accent-color: #d8b87f; }
+.screen, .panel { position: fixed; inset: 0; z-index: 12; display: flex; align-items: center; justify-content: center; padding: 24px; background: linear-gradient(90deg, #071116e8 0%, #0b1b21d9 43%, #07111669 100%); }
+.screen-card { width: min(570px, 100%); margin-right: min(28vw, 300px); padding: clamp(24px, 4vw, 42px); border: 1px solid #b7c5bb35; background: #102128d9; box-shadow: 0 30px 100px #0008; backdrop-filter: blur(16px); }
+.screen-card h1 { margin: .65rem 0 1.25rem; font: 400 clamp(3rem, 7vw, 5rem)/.98 'Libre Baskerville', Georgia, serif; letter-spacing: -.06em; }
+.screen-card h1 em { color: #d5c39d; font-style: normal; }
+.screen-card p:not(.smallprint) { color: #d0dbd4; line-height: 1.7; max-width: 46ch; }
+.primary { width: 100%; margin: 1.4rem 0 1.1rem; padding: 1rem 1.25rem; border: 1px solid #dfc998; color: #17232a; background: #dec794; font-weight: 600; letter-spacing: .12em; text-align: left; }
+.primary span { float: right; font-size: 1.25rem; line-height: .9; }
+.primary:hover { background: #f0d7a1; }
+.settings-grid { display: grid; gap: .8rem; padding: .9rem 0; border-top: 1px solid #b7c5bb35; }
+.settings-grid label { display: grid; grid-template-columns: 95px 1fr auto; align-items: center; gap: 10px; color: #aab9b6; font-size: .7rem; font-weight: 600; letter-spacing: .12em; }
+.settings-grid select { grid-column: 2 / 4; min-width: 0; padding: .4rem .55rem; border: 1px solid #aab9b64d; color: #e9eee9; background: #102128; }
+.settings-grid output { grid-column: 3; grid-row: 1; }
+.settings-grid input { grid-column: 2 / 4; width: 100%; accent-color: #d5bb87; }
+.smallprint { color: #93a7a4; font-size: .72rem; line-height: 1.65; }
+.screen-foot { position: absolute; bottom: 22px; left: 30px; color: #b5c3bd; font-size: .65rem; letter-spacing: .25em; }
+#hud { position: fixed; inset: 0; z-index: 5; pointer-events: none; }
+.hud-top { position: absolute; top: 20px; left: 26px; right: 26px; display: flex; gap: 15px; align-items: center; color: #eef3ec; font-size: .68rem; letter-spacing: .21em; text-shadow: 0 2px 12px #07131a; }
+.hud-top strong { color: #e4c993; }
+#weather-label { margin-left: auto; }
+#menu-button { pointer-events: auto; border: 1px solid #c5d3ca69; background: #0a1a20a8; color: #eef3ec; padding: .48rem .7rem; letter-spacing: .1em; }
+#place-label { position: absolute; top: 61px; left: 26px; font: 400 .86rem 'Libre Baskerville', Georgia, serif; color: #e8e2d6; text-shadow: 0 2px 12px #07131a; }
+#crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -56%); color: #f6f0dbb9; font-size: 2rem; line-height: 1; }
+#interaction, #vehicle-hud, #drone-hud { position: absolute; left: 50%; bottom: 82px; transform: translateX(-50%); padding: .6rem 1rem; color: #f3eee0; background: #0d2126bf; border: 1px solid #dfc38e54; text-align: center; white-space: nowrap; font-size: .78rem; letter-spacing: .08em; }
+#vehicle-hud, #drone-hud { bottom: 115px; }
+#drone-altitude { margin-left: 12px; color: #d6bc8d; }
+.controls-hint { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); width: max-content; max-width: 95vw; color: #c6d2cb; font-size: .66rem; letter-spacing: .1em; text-align: center; text-shadow: 0 2px 10px #000; }
+.panel { z-index: 16; background: #071116d9; }
+.panel-card { width: min(700px, 100%); max-height: 90vh; overflow: auto; padding: 22px; border: 1px solid #aab9b64d; background: #102128f5; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; }
+.panel-head h2 { font: 400 1.15rem 'Libre Baskerville', Georgia, serif; letter-spacing: .12em; }
+.panel-head button { border: 0; background: none; color: #e9eee9; font-size: 2rem; }
+#map-content svg { display: block; width: min(100%, 560px); max-height: 60vh; margin: auto; background: #1b3031; border: 1px solid #6d868344; }
+#touch-controls { position: fixed; inset: 0; z-index: 6; pointer-events: none; touch-action: none; }
+#touch-look { position: absolute; inset: 0 0 0 42%; pointer-events: auto; }
+#touch-stick { position: absolute; left: 25px; bottom: 45px; width: 122px; height: 122px; border: 2px solid #d7e6dd8a; border-radius: 50%; background: #10262c9c; pointer-events: auto; }
+#touch-stick-thumb { display: block; position: absolute; width: 54px; height: 54px; left: 32px; top: 32px; border-radius: 50%; background: #e8d2a8b5; border: 1px solid #f5e6c5; }
+.touch-top, .touch-drive, .touch-drone { position: absolute; display: flex; gap: 7px; pointer-events: auto; }
+.touch-top { top: 10px; right: 10px; }
+.touch-drive, .touch-drone { right: 18px; bottom: 28px; }
+#touch-controls button { min-height: 40px; border: 1px solid #d0dcd06e; border-radius: 4px; padding: .4rem .65rem; color: #f1f3e9; background: #0b2028b8; font-size: .65rem; font-weight: 600; letter-spacing: .04em; }
+#touch-controls button.pressed { background: #d1b77b; color: #0b2028; }
+#touch-action { position: absolute; right: 35px; bottom: 95px; pointer-events: auto; }
+#touch-controls[data-mode="walking"] .touch-drive, #touch-controls[data-mode="walking"] .touch-drone,
+#touch-controls[data-mode="driving"] .touch-drone, #touch-controls[data-mode="drone"] .touch-drive { display: none; }
+#touch-rotate { position: fixed; inset: 0; z-index: 35; display: grid; place-items: center; padding: 2rem; background: #08141a; text-align: center; letter-spacing: .12em; }
+#toast { position: fixed; left: 50%; top: 17%; transform: translateX(-50%); z-index: 18; padding: .7rem 1rem; border: 1px solid #d6c39770; background: #102128e8; text-align: center; font-size: .75rem; letter-spacing: .1em; }
+@media (max-width: 780px) { .screen-card { margin: 0; } .controls-hint { display: none; } .hud-top { top: 8px; left: 8px; right: 8px; } #place-label { top: 49px; left: 10px; } .screen-foot { left: 18px; bottom: 8px; } }
