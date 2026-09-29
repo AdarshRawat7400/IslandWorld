@@ -24,6 +24,20 @@ npm run preview
 
 The output is `dist/`. Vite copies `public/` into that build, including the asset source records and license notices. The development and preview scripts listen on all network interfaces; use an appropriate firewall and access policy if sharing a local server.
 
+## Firebase Hosting
+
+This project targets the separate Firebase project `islandworld-3ccb4` in the `rawatadarsh2763@gmail.com` account. The Hosting configuration deploys the built `dist/` folder. Sign in to Firebase CLI with that Google account, then run:
+
+```powershell
+npm ci
+npm test
+npm run build
+firebase login:use rawatadarsh2763@gmail.com
+firebase deploy --only hosting --project islandworld-3ccb4
+```
+
+The hosted site is `https://islandworld-3ccb4.web.app/`. Keep the bundled asset source and license notices in `public/` when making future builds.
+
 ## Explore
 
 | Action | Desktop control |
