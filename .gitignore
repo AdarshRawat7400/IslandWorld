@@ -4,6 +4,7 @@ dist/
 firebase-debug.log
 firebase-debug.*.log
 work/
+VideoExports/
 
 .env
 .env.*

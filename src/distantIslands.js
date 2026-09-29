@@ -49,8 +49,17 @@ export function sampleDistantIslandHeight(spec, x, z) {
   const dx = (x - ridgeX) / (spec.radiusX * 0.40);
   const dz = (z - ridgeZ) / (spec.radiusZ * 0.34);
   const ridge = Math.exp(-(dx * dx + dz * dz) * 1.6) * 13 * inner;
+  // Southwest Warden rises into an off-centre, weathered headland. Its higher
+  // shoulder gives the second island a recognisably different skyline from
+  // North Watch's long, even plateau without adding geometry or draw calls.
+  const shoulderX = (x + 155) / (spec.radiusX * 0.48);
+  const shoulderZ = (z - 35) / (spec.radiusZ * 0.43);
+  const headland = spec.id === 'southwest-warden'
+    ? 66 * Math.exp(-(shoulderX * shoulderX + shoulderZ * shoulderZ * 1.3) * 1.25)
+      * Math.pow(inner, 0.48)
+    : 0;
   return spec.cliffHeight + spec.hillHeight * Math.pow(inner, 0.85)
-    + rim + ridge;
+    + rim + ridge + headland;
 }
 
 function setVertex(vertices, colors, x, y, z, color) {
@@ -232,8 +241,8 @@ export function createDistantIslands(scene) {
     const storm = weather === 'storm';
     const rainy = weather === 'rain';
     const fog = fogColor?.isColor ? fogColor : fallbackFog;
-    const floor = weather === 'clear' ? 0.45 : weather === 'dawn' ? 0.41
-      : storm ? 0.20 : rainy ? 0.25 : 0.30;
+    const floor = weather === 'clear' ? 0.50 : weather === 'dawn' ? 0.45
+      : storm ? 0.23 : rainy ? 0.28 : 0.34;
     uniforms.uFogColor.value.copy(fog);
     uniforms.uFogDensity.value = Number.isFinite(fogDensity)
       ? Math.max(0, fogDensity) : 0.0027;

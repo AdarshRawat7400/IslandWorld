@@ -612,10 +612,11 @@ export function createTreeVisibilityFilter() {
   return { refresh, includes };
 }
 
-export function treeDetailForRoot(root, cameraX, cameraZ, viewFilter) {
+export function treeDetailForRoot(root, cameraX, cameraZ, viewFilter,
+  farDistance = TREE_CULL_DISTANCE) {
   const distanceSquared = (root.x - cameraX) ** 2 + (root.z - cameraZ) ** 2;
   if (distanceSquared < TREE_LOD_DISTANCE ** 2) return 'near';
-  if (distanceSquared < TREE_CULL_DISTANCE ** 2 && viewFilter.includes(root)) return 'far';
+  if (distanceSquared < farDistance ** 2 && viewFilter.includes(root)) return 'far';
   return null;
 }
 
@@ -704,7 +705,7 @@ function addTrees(scene, roots, barkMaps, windTime, windStrength, windDirection,
   }
 
   const viewFilter = createTreeVisibilityFilter();
-  function updateVisibility(camera) {
+  function updateVisibility(camera, { aerialCapture = false } = {}) {
     const x = camera.position.x;
     const z = camera.position.z;
     if (!viewFilter.refresh(camera)) return;
@@ -714,7 +715,8 @@ function addTrees(scene, roots, barkMaps, windTime, windStrength, windDirection,
       nearRoots.length = 0;
       farRoots.length = 0;
       for (const root of group.roots) {
-        const detail = treeDetailForRoot(root, x, z, viewFilter);
+        const detail = treeDetailForRoot(root, x, z, viewFilter,
+          aerialCapture ? 1600 : TREE_CULL_DISTANCE);
         if (detail === 'near') nearRoots.push(root);
         if (detail === 'far') farRoots.push(root);
       }
@@ -805,8 +807,8 @@ export function createVegetation(scene, surface, {
     }).catch((error) => console.error('Could not generate coastal trees:', error));
   }
 
-  function updateVisibility(camera) {
-    trees?.updateVisibility(camera);
+  function updateVisibility(camera, { aerialCapture = false } = {}) {
+    trees?.updateVisibility(camera, { aerialCapture });
     coastalDetails.updateVisibility(camera);
     if (windSwept) {
       const viewLimitSquared = MEADOW_CULL_DISTANCE * MEADOW_CULL_DISTANCE;

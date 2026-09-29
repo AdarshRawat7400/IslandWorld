@@ -937,7 +937,7 @@ export function createWorld(scene, camera, { renderProfile = DESKTOP_RENDER_PROF
     rainData.setShelters(rectangles);
   }
 
-  function update(dt, elapsed, requestedWeather, atmosphere) {
+  function update(dt, elapsed, requestedWeather, atmosphere, captureOptions = null) {
     if (typeof requestedWeather === 'string') setWeather(requestedWeather);
     dt = clamp(Number.isFinite(dt) ? dt : 0, 0, 0.1);
     if (blend < 1) {
@@ -988,8 +988,11 @@ export function createWorld(scene, camera, { renderProfile = DESKTOP_RENDER_PROF
     // weather preset. The same density reaches terrain, sea and surf shaders.
     const fogMultiplier = Number.isFinite(atmosphere?.multiplier)
       ? clamp(atmosphere.multiplier, 0.6, 1.5) : 1;
-    const visibleFogDensity = current.fogDensity * fogMultiplier
+    const naturalFogDensity = current.fogDensity * fogMultiplier
       * (celestial ? mix(0.9, 1.13, cloudCover) : 1);
+    const fogCap = Number.isFinite(captureOptions?.fogDensityCap)
+      ? clamp(captureOptions.fogDensityCap, 0.0001, 0.01) : Infinity;
+    const visibleFogDensity = Math.min(naturalFogDensity, fogCap);
     fog.density = visibleFogDensity;
     hemi.color.copy(current.hemiSky);
     hemi.groundColor.copy(current.hemiGround);
@@ -998,6 +1001,10 @@ export function createWorld(scene, camera, { renderProfile = DESKTOP_RENDER_PROF
       hemi.groundColor.lerp(NIGHT_COLORS.hemiGround, night * 0.86);
     }
     hemi.intensity = current.hemiIntensity * (celestial ? mix(1, 0.33, night) : 1);
+    // A filming-only cool sky bounce keeps the real island's cliff and roof
+    // geometry legible against a storm-night sea. Normal gameplay has no fill.
+    const cinematicNightFill = clamp(Number(captureOptions?.nightFill) || 0, 0, 1) * night;
+    hemi.intensity += cinematicNightFill * 1.25;
     sun.color.copy(current.sun);
     sun.intensity = current.sunIntensity * (celestial
       ? daylight * (1 - cloudCover * 0.38) + twilight * 0.12 : 1);
@@ -1016,6 +1023,7 @@ export function createWorld(scene, camera, { renderProfile = DESKTOP_RENDER_PROF
       moon.target.updateMatrixWorld();
       moon.intensity = night * clamp(celestial.moonDirection.y * 2.5, 0, 1)
         * (0.12 + celestial.moonPhase * 0.2) * (1 - cloudCover * 0.5);
+      moon.intensity += cinematicNightFill * 0.36;
     } else {
       sun.position.set(camera.position.x - 170, 280, camera.position.z - 210);
       sun.castShadow = true;
@@ -1049,7 +1057,7 @@ export function createWorld(scene, camera, { renderProfile = DESKTOP_RENDER_PROF
     vegetation.windTime.value = elapsed || 0;
     vegetation.windStrength.value = windForce;
     vegetation.windDirection.value.copy(windDirection);
-    vegetation.updateVisibility(camera);
+    vegetation.updateVisibility(camera, { aerialCapture: captureOptions?.aerialTrees === true });
     surf.uniforms.uTime.value = elapsed || 0;
     surf.uniforms.uWind.value = sea.uniforms.uWind.value;
     surf.uniforms.uFog.value.copy(fog.color);

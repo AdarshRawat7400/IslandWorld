@@ -143,9 +143,10 @@ export function createTouchControls(root, { onLook, onAction }) {
   return {
     input,
     setVisible(visible) {
-      if (root.classList.contains('hidden') === !visible) return;
-      root.classList.toggle('hidden', !visible);
-      if (!visible) this.reset();
+      const hidden = !visible;
+      if (root.hidden === hidden) return;
+      root.hidden = hidden;
+      if (hidden) this.reset();
     },
     setMode(mode) {
       if (root.dataset.mode !== mode) root.dataset.mode = mode;

@@ -11,6 +11,11 @@ button { cursor: pointer; }
 button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #dfc38e; outline-offset: 3px; }
 #game, #game canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
 #game canvas { touch-action: none; }
+body.cinematic-capture #hud,
+body.cinematic-capture #toast,
+body.cinematic-capture #touch-controls,
+body.cinematic-capture #touch-rotate,
+body.cinematic-capture #map-panel { display: none !important; }
 #vignette { position: fixed; inset: 0; pointer-events: none; background: radial-gradient(ellipse at center, transparent 45%, #0611174a 100%); }
 #lighthouse-glare { position: fixed; inset: 0; z-index: 4; pointer-events: none; opacity: 0; mix-blend-mode: screen; --flare-x: 50%; --flare-y: 50%; background: radial-gradient(circle 180px at var(--flare-x) var(--flare-y), #fff8dbea 0, #ffe2a072 10%, #ffc87025 36%, transparent 100%); }
 #lighthouse-glare::after { content: ''; position: absolute; left: var(--flare-x); top: var(--flare-y); width: min(45vw, 620px); height: 3px; transform: translate(-50%, -50%); background: linear-gradient(90deg, transparent, #fff2ca6b 42%, #fffdf0eb 50%, #fff2ca6b 58%, transparent); filter: blur(2px); }

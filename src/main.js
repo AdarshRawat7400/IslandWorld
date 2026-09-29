@@ -24,6 +24,8 @@ import { addWetWindows } from './wetWindows.js';
 import { createAudio } from './audio.js';
 import { createMusic, DEFAULT_MUSIC_VOLUME } from './music.js';
 import { createDroneView } from './droneView.js';
+import { createCinematicCapture } from './cinematicCapture.js';
+import { createShowcaseRecording } from './showcaseRecording.js';
 import { createTouchControls } from './touchControls.js';
 import { orientFirstPersonCamera } from './firstPersonCamera.js';
 import { createLighthouseGlare } from './lighthouseGlare.js';
@@ -42,6 +44,9 @@ import './style.css';
 
 const $ = (id) => document.getElementById(id);
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+const captureRequest = new URLSearchParams(location.search).get('capture');
+const captureEnabled = ['1', 'orbit', 'showcase'].includes(captureRequest);
+if (captureEnabled) document.body.classList.add('cinematic-capture');
 const siteById = Object.fromEntries(SITES.map((site) => [site.id, site]));
 const keys = new Set();
 const settingsKey = 'island-world-settings-v1';
@@ -73,10 +78,34 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.08, 3200);
 camera.rotation.order = 'YXZ';
 scene.add(camera);
-const renderProfile = selectRenderProfile(detectRenderEnvironment());
+const cinematicCapture = captureEnabled ? createCinematicCapture(camera) : null;
+const ordinaryRenderProfile = selectRenderProfile(detectRenderEnvironment());
+const captureQuality = new URLSearchParams(location.search).get('captureQuality');
+const renderProfile = captureEnabled && captureQuality === 'balanced'
+  ? { ...ordinaryRenderProfile, grassQuality: 28_000,
+    grassDensityMultiplier: 6, shadowMapSize: 1024, cloudStepCap: 5 }
+  : captureEnabled && captureQuality === 'performance'
+    ? { ...ordinaryRenderProfile, tier: 'mobile-standard', grassQuality: 18_000,
+      grassDensityMultiplier: 4, shadowMapSize: 512, cloudStepCap: 4 }
+    : ordinaryRenderProfile;
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, renderProfile.pixelRatioCap));
 renderer.setSize(innerWidth, innerHeight);
+if (captureEnabled) {
+  // Keep delivery captures at true 1080p even if the browser window is smaller.
+  // Smaller back buffers are available only as local performance diagnostics.
+  const captureParams = new URLSearchParams(location.search);
+  const diagnosticWidth = Number(captureParams.get('captureWidth'));
+  const diagnosticHeight = Number(captureParams.get('captureHeight'));
+  const captureWidth = import.meta.env.DEV && diagnosticWidth >= 640 && diagnosticWidth <= 1920
+    ? Math.round(diagnosticWidth) : 1920;
+  const captureHeight = import.meta.env.DEV && diagnosticHeight >= 360 && diagnosticHeight <= 1080
+    ? Math.round(diagnosticHeight) : 1080;
+  renderer.setPixelRatio(1);
+  renderer.setSize(captureWidth, captureHeight, false);
+  camera.aspect = captureWidth / captureHeight;
+  camera.updateProjectionMatrix();
+}
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.25;
@@ -352,7 +381,7 @@ function currentWeather() {
 }
 
 function requestLook() {
-  if (!started || menuOpen || mapOpen || touchEnabled) return;
+  if (captureEnabled || !started || menuOpen || mapOpen || touchEnabled) return;
   // Browsers may reject the request if the tab loses focus during navigation.
   // Clicking the canvas again remains a valid retry after that transient case.
   const capture = renderer.domElement.requestPointerLock;
@@ -480,7 +509,8 @@ function interact() {
 }
 
 function onLook(dx, dy) {
-  if (!started || menuOpen || mapOpen || driving.active || cliffFall.phase !== 'grounded') return;
+  if (cinematicCapture?.active || !started || menuOpen || mapOpen
+    || driving.active || cliffFall.phase !== 'grounded') return;
   if (drone.active) { drone.look(dx, dy); return; }
   player.yaw -= dx * 0.0021;
   player.pitch = clamp(player.pitch - dy * 0.0021, -1.45, 1.45);
@@ -503,7 +533,8 @@ const touchControls = createTouchControls($('touch-controls'), {
 function refreshTouchUi() {
   const landscape = innerWidth >= innerHeight;
   $('touch-rotate').hidden = !touchEnabled || landscape || !started;
-  touchControls.setVisible(touchEnabled && landscape && started && !menuOpen && !mapOpen);
+  touchControls.setVisible(!captureEnabled && touchEnabled && landscape
+    && started && !menuOpen && !mapOpen);
   if (!touchEnabled) return;
   const mode = drone.active ? 'drone' : driving.active ? 'driving' : 'walking';
   touchControls.setMode(mode);
@@ -515,6 +546,7 @@ function refreshTouchUi() {
 }
 
 window.addEventListener('keydown', (event) => {
+  if (cinematicCapture?.active) return;
   if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)
     && started && !menuOpen) event.preventDefault();
   if (event.code === 'Escape') {
@@ -555,6 +587,7 @@ document.addEventListener('mousemove', (event) => {
 });
 renderer.domElement.addEventListener('click', requestLook);
 window.addEventListener('resize', () => {
+  if (captureEnabled) { refreshTouchUi(); return; }
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setPixelRatio(Math.min(devicePixelRatio, renderProfile.pixelRatioCap));
@@ -562,16 +595,35 @@ window.addEventListener('resize', () => {
   refreshTouchUi();
 });
 
+let showcaseRecording = null;
 let lastFrame = performance.now();
+let capturePerfSince = lastFrame;
+let capturePerfFrames = 0;
+let capturePerfUpdateMs = 0;
+let capturePerfRenderMs = 0;
 function frame(now) {
-  requestAnimationFrame(frame);
-  const dt = Math.min(Math.max((now - lastFrame) / 1000, 0), 0.05);
+  const offlineFrame = showcaseRecording?.offlineActive === true;
+  if (!offlineFrame) requestAnimationFrame(frame);
+  const frameWorkStart = captureEnabled ? performance.now() : 0;
+  const wallDt = Math.max((now - lastFrame) / 1000, 0);
   lastFrame = now;
-  elapsed += dt;
+  if (showcaseRecording?.offlineBusy) return;
+  const dt = showcaseRecording?.offlineActive ? 1 / 30 : Math.min(wallDt, 0.05);
+  cinematicCapture?.update(assetsReady && firstFrameRendered ? wallDt : 0);
+  const showcaseShot = showcaseRecording?.tick(now);
+  if (showcaseShot) {
+    elapsed = showcaseShot.simulationSeconds;
+    cinematicCapture.setView(showcaseShot.camera);
+    climate = weatherClock.sample(showcaseShot.weatherSeconds, {
+      weatherOverride: showcaseShot.weatherOverride,
+      timeOverride: showcaseShot.timeOverride,
+    });
+  } else elapsed += dt;
   const active = started && !menuOpen && !mapOpen;
+  const playerControlsActive = active && !cinematicCapture?.active;
   const inputDt = active ? dt : 0;
   ambientElapsed += inputDt;
-  if (elapsed - climateSampleTime >= 0.05) {
+  if (!showcaseShot && elapsed - climateSampleTime >= 0.05) {
     climate = weatherClock.sample(elapsed, {
       weatherOverride: weatherSelect.value, timeOverride: timeSelect.value,
     });
@@ -605,7 +657,7 @@ function frame(now) {
     playerX: player.x, playerZ: player.z, playerVehicle: driving.active,
     weather, started,
   });
-  if (active && cliffFall.phase === 'grounded' && respawnFadeTime < 0) {
+  if (playerControlsActive && cliffFall.phase === 'grounded' && respawnFadeTime < 0) {
     if (driving.active) {
       driving.update(dt, {
         throttle: clamp(Number(keys.has('KeyW')) - Number(keys.has('KeyS')) + controls.throttle, -1, 1),
@@ -645,13 +697,15 @@ function frame(now) {
       cliffWorld, canStandAt);
   }
 
-  const sheltered = !drone.active && isRoofed(player.x, player.z);
+  const sheltered = !cinematicCapture?.active && !drone.active && isRoofed(player.x, player.z);
   footstepDistance += driving.active || drone.active ? 0 : Math.hypot(player.x - previousX, player.z - previousZ);
   if (footstepDistance > 2.25) {
     footstepDistance -= 2.25;
     sound.playFootstep(sheltered || structures.onSouthPier(player.x, player.z) ? 'floor' : 'wet ground');
   }
-  if (!started) {
+  if (cinematicCapture?.active) {
+    cinematicCapture.applyToCamera();
+  } else if (!started) {
     camera.position.set(180 + Math.sin(elapsed * 0.08) * 3, 58, 470);
     camera.lookAt(50, 30, 240);
   } else if (cliffFall.phase !== 'grounded') {
@@ -683,7 +737,8 @@ function frame(now) {
 
   structures.update(elapsed);
   world.setIndoor(sheltered);
-  const thunder = world.update(dt, elapsed, weather, climate);
+  const thunder = world.update(dt, elapsed, weather, climate,
+    cinematicCapture?.active ? cinematicCapture.state() : null);
   lighthouseGlare.update(camera, world.lighthouseBeacons,
     started && !menuOpen && !mapOpen);
   windSpray.update(dt, elapsed, weather, { indoors: sheltered,
@@ -736,8 +791,58 @@ function frame(now) {
   else if (nearby?.person) $('interaction').textContent = `E · TALK TO ${nearby.person.name.toUpperCase()} · ${nearby.person.role.toUpperCase()}`;
   if (touchEnabled && started && !menuOpen && !mapOpen) refreshTouchUi();
   if (!$('toast').hidden && now >= toastUntil) $('toast').hidden = true;
+  const renderStart = captureEnabled ? performance.now() : 0;
   renderer.render(scene, camera);
+  if (offlineFrame) {
+    // rAF can be compositor-throttled to ~1 Hz in a capture tab despite a
+    // visible WebGL canvas. Frame stepping waits for the exact encoded frame,
+    // then schedules the next render without advancing during encoder work.
+    void showcaseRecording.afterRender().finally(() => {
+      if (showcaseRecording?.offlineActive) {
+        setTimeout(() => frame(performance.now()), 0);
+      } else requestAnimationFrame(frame);
+    });
+  } else void showcaseRecording?.afterRender();
+  if (captureEnabled) {
+    capturePerfFrames += 1;
+    capturePerfUpdateMs += renderStart - frameWorkStart;
+    capturePerfRenderMs += performance.now() - renderStart;
+    if (now - capturePerfSince >= 5000) {
+      window.__ISLAND_WORLD_PERF__ = Object.freeze({
+        fps: capturePerfFrames * 1000 / (now - capturePerfSince),
+        updateMs: capturePerfUpdateMs / capturePerfFrames,
+        renderMs: capturePerfRenderMs / capturePerfFrames,
+        calls: renderer.info.render.calls,
+        triangles: renderer.info.render.triangles,
+        canvasWidth: renderer.domElement.width,
+        canvasHeight: renderer.domElement.height,
+        visibility: document.visibilityState,
+        focus: document.hasFocus(),
+      });
+      document.body.dataset.capturePerf = JSON.stringify(window.__ISLAND_WORLD_PERF__);
+      capturePerfSince = now;
+      capturePerfFrames = 0;
+      capturePerfUpdateMs = 0;
+      capturePerfRenderMs = 0;
+    }
+  }
   if (!firstFrameRendered) { firstFrameRendered = true; hideLoadingIfReady(); }
+  if (captureRequest === 'showcase' && assetsReady && !showcaseRecording) {
+    showcaseRecording = createShowcaseRecording({
+      canvas: renderer.domElement,
+      prepare(shot) {
+        cinematicCapture.setView(shot.camera);
+        climate = weatherClock.sample(shot.weatherSeconds, {
+          weatherOverride: shot.weatherOverride, timeOverride: shot.timeOverride,
+        });
+      },
+      start: closeMenu,
+      interact,
+    });
+  }
+  if (captureRequest === 'orbit' && assetsReady && !cinematicCapture.active && !started) {
+    window.__ISLAND_WORLD_CAPTURE__.startOrbit();
+  }
 }
 requestAnimationFrame(frame);
 
@@ -755,3 +860,58 @@ window.__ISLAND_WORLD__ = Object.freeze({
     id, x, z, loaded: Boolean(root), visible: Boolean(root?.visible),
   })); },
 });
+
+if (cinematicCapture) {
+  function prepareCapture() {
+    if (mapOpen) closeMap();
+    if (menuOpen) closeMenu();
+    keys.clear();
+    touchControls.reset();
+    document.exitPointerLock?.();
+  }
+
+  function setCaptureResolution(width = 1920, height = 1080) {
+    const pixelWidth = Math.round(Number(width));
+    const pixelHeight = Math.round(Number(height));
+    if (!Number.isFinite(pixelWidth) || !Number.isFinite(pixelHeight)
+      || pixelWidth < 640 || pixelHeight < 360
+      || pixelWidth > 3840 || pixelHeight > 2160) {
+      throw new RangeError('Capture resolution must be between 640×360 and 3840×2160.');
+    }
+    renderer.setPixelRatio(1);
+    renderer.setSize(pixelWidth, pixelHeight, false);
+    camera.aspect = pixelWidth / pixelHeight;
+    camera.updateProjectionMatrix();
+    return { width: renderer.domElement.width, height: renderer.domElement.height };
+  }
+
+  // Available only with ?capture=1 (or ?capture=orbit / ?capture=showcase).
+  // Screen recorders can capture this canvas at its actual 1920×1080 buffer size.
+  window.__ISLAND_WORLD_CAPTURE__ = Object.freeze({
+    get canvas() { return renderer.domElement; },
+    get ready() { return assetsReady && firstFrameRendered; },
+    get state() { return { ...cinematicCapture.state(),
+      canvasWidth: renderer.domElement.width, canvasHeight: renderer.domElement.height }; },
+    setResolution: setCaptureResolution,
+    startOrbit(options) {
+      prepareCapture();
+      return cinematicCapture.startOrbit(options);
+    },
+    seekOrbit(seconds) { return cinematicCapture.seekOrbit(seconds); },
+    setView(view) {
+      prepareCapture();
+      return cinematicCapture.setView(view);
+    },
+    stop() { return cinematicCapture.stop(); },
+    setWeather(mode) {
+      if (!['auto', 'clear', 'mist', 'rain', 'storm'].includes(mode)) return false;
+      weatherSelect.value = mode;
+      return true;
+    },
+    setTime(mode) {
+      if (!['auto', 'dawn', 'noon', 'dusk', 'night'].includes(mode)) return false;
+      timeSelect.value = mode;
+      return true;
+    },
+  });
+}

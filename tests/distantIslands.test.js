@@ -33,6 +33,16 @@ test('two distant offshore landforms have island-scale high cliffs', () => {
   }
 });
 
+test('Southwest Warden has a raised headland distinct from North Watch', () => {
+  const [north, southwest] = DISTANT_ISLANDS;
+  const northShoulder = sampleDistantIslandHeight(north, -155, 35);
+  const southwestShoulder = sampleDistantIslandHeight(southwest, -155, 35);
+  const southwestOpposite = sampleDistantIslandHeight(southwest, 155, -35);
+  assert.ok(southwestShoulder > northShoulder + 45);
+  assert.ok(southwestShoulder > southwestOpposite + 45);
+  assert.ok(southwestShoulder > 110);
+});
+
 test('distant beams rotate through 360 degrees and appear in night or storm', () => {
   const scene = new THREE.Scene();
   const distant = createDistantIslands(scene);

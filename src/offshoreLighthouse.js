@@ -194,8 +194,8 @@ function beamGeometry(vertical) {
   const positions = [], across = [], along = [], indices = [];
   const rows = [0, 0.08, 0.2, 0.4, 0.65, 1];
   for (const t of rows) {
-    const distance = 7 + t * 850;
-    const width = 1.25 + distance * 0.026;
+    const distance = 7 + t * 1250;
+    const width = 1.25 + distance * 0.042;
     for (const s of [-1, 0, 1]) {
       positions.push(vertical ? 0 : s * width,
         vertical ? s * width : 0, distance);
@@ -244,8 +244,8 @@ function scatteringMaterial() {
       varying float vAcross;
       varying float vAlong;
       void main() {
-        float core = pow(max(0.0, 1.0 - abs(vAcross)), 2.4);
-        float taper = pow(max(0.0, 1.0 - vAlong), 1.75);
+        float core = pow(max(0.0, 1.0 - abs(vAcross)), 1.5);
+        float taper = pow(max(0.0, 1.0 - vAlong), 0.9);
         float moisture = 0.88 + 0.12 * sin(vAlong * 39.0 - uTime * 0.85);
         float opacity = uStrength * core * taper * moisture;
         if (opacity < 0.002) discard;
@@ -367,8 +367,8 @@ export function createOffshoreLighthouse(spec, { groundY = 0,
         * Math.max(0.35, transmission) * 1.7, 0, 1);
       haloMaterial.opacity = clamp(power * (0.045 + alignment * 0.46)
         * Math.max(0.25, transmission) * (weather === 'storm' ? 1.4 : 1), 0, 0.8);
-      const scattering = weather === 'storm' ? 0.15
-        : weather === 'rain' ? 0.085 : weather === 'mist' ? 0.063 : 0.013;
+      const scattering = weather === 'storm' ? 0.38
+        : weather === 'rain' ? 0.12 : weather === 'mist' ? 0.085 : 0.018;
       beamMaterial.uniforms.uStrength.value = power * scattering;
       beamMaterial.uniforms.uTime.value = time;
       beamRoot.visible = power > 0.01 && scattering > 0.02;

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>IslandWorld Offline Encoder Smoke Test</title>
+<style>
+  body { margin: 2rem; color: #e7e9e8; background: #111920; font: 16px system-ui; }
+  button { padding: .75rem 1rem; font: inherit; }
+  canvas { display: block; width: min(100%, 960px); height: auto; margin-top: 1rem; }
+</style>
+<h1>IslandWorld offline encoder smoke test</h1>
+<p>This draws 60 test frames at 1920×1080 and records them with fixed 30 fps timestamps.</p>
+<button id="record" type="button">Record 60 frames</button>
+<p id="status">Ready</p>
+<canvas id="test-canvas" width="1920" height="1080"></canvas>
+<script type="module" src="/tools/offline-smoke.mjs"></script>
+</html>

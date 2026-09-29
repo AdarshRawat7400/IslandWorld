@@ -77,9 +77,9 @@ test('a second touch releasing a pedal does not cancel the first finger', () => 
   assert.equal(input.snapshot().throttle, 0);
 });
 
-test('unchanged touch HUD state does not rewrite DOM every render frame', () => {
+test('touch HUD removes its initial hidden attribute and avoids per-frame DOM writes', () => {
   let hidden = true;
-  let toggles = 0;
+  let hiddenWrites = 0;
   let modeWrites = 0;
   let thumbWrites = 0;
   let labelWrites = 0;
@@ -98,10 +98,8 @@ test('unchanged touch HUD state does not rewrite DOM every render frame', () => 
     set disabled(value) { disabledWrites++; disabled = value; },
   };
   const root = {
-    classList: {
-      contains(name) { return name === 'hidden' && hidden; },
-      toggle(name, value) { assert.equal(name, 'hidden'); toggles++; hidden = value; },
-    },
+    get hidden() { return hidden; },
+    set hidden(value) { hiddenWrites++; hidden = value; },
     dataset: {
       get mode() { return mode; },
       set mode(value) { modeWrites++; mode = value; },
@@ -114,24 +112,26 @@ test('unchanged touch HUD state does not rewrite DOM every render frame', () => 
   };
   const controls = createTouchControls(root, { onLook() {}, onAction() {} });
   for (let frame = 0; frame < 120; frame++) controls.setVisible(false);
-  assert.equal(toggles, 0);
+  assert.equal(hiddenWrites, 0);
   assert.equal(thumbWrites, 0);
 
   controls.setVisible(true);
+  assert.equal(root.hidden, false);
   controls.input.startStick(1, 100, 40, 100, 100);
   for (let frame = 0; frame < 120; frame++) {
     controls.setVisible(true);
     controls.setMode('walking');
     controls.setAction('INSPECT', false);
   }
-  assert.equal(toggles, 1);
+  assert.equal(hiddenWrites, 1);
   assert.equal(modeWrites, 1);
   assert.equal(labelWrites, 0);
   assert.equal(disabledWrites, 1);
   assert.ok(controls.input.snapshot().forward > 0.9);
 
   for (let frame = 0; frame < 120; frame++) controls.setVisible(false);
-  assert.equal(toggles, 2);
+  assert.equal(root.hidden, true);
+  assert.equal(hiddenWrites, 2);
   assert.equal(thumbWrites, 1);
   assert.equal(controls.input.snapshot().forward, 0);
 });
