@@ -2,6 +2,8 @@
 
 An explorable coastal island built with Three.js and Blender assets. This project is a reusable world foundation: the terrain, weather, buildings, roads, vehicles, wildlife, ambient residents, ambience, and exploration controls are present, while campaign progression and story objectives are absent.
 
+**Play online:** [Island World](https://islandworld-3ccb4.web.app/)
+
 The source project remains in its own folder. This folder can be developed and built independently.
 
 ## Run locally
