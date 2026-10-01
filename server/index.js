@@ -53,7 +53,8 @@ const failure = (error, message = error) => ({ ok: false, error, message });
 const isFiniteNumber = (n) => typeof n === 'number' && Number.isFinite(n);
 const distanceXZ = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const publicAmmo = (ammo) => Object.fromEntries(Object.entries(ammo).map(([id, item]) =>
-  [id, { magazine: item.magazine, reserve: item.reserve, reloadingUntil: item.reloadingUntil }]));
+  [id, { magazine: item.magazine, reserve: item.reserve, reloadingUntil: item.reloadingUntil,
+    revision: item.revision ?? 0, lastShotId: item.lastShotId ?? 0 }]));
 const publicInventory = (inventory) => ({ ...inventory, guns: [...inventory.guns] });
 const publicPickup = ({ expiresAt, initialCount, ...pickup }) => ({ ...pickup });
 const publicExplosive = ({ id, kind, ownerId, x, y, z, createdAt, detonatesAt,
@@ -86,7 +87,14 @@ function allowedOrigin(origin, configured) {
 function freshAmmo() {
   return Object.fromEntries(Object.entries(WEAPONS).map(([id, weapon]) => [id, {
     magazine: weapon.magazine, reserve: weapon.reserve, reloadingUntil: 0, lastFiredAt: 0,
+    revision: 0, lastShotId: 0,
   }]));
+}
+
+function revisedAmmo(previous, updated) {
+  if (previous === updated) return updated;
+  return Object.fromEntries(Object.entries(updated).map(([id, state]) => [id,
+    previous[id] === state ? state : { ...state, revision: (previous[id]?.revision ?? 0) + 1 }]));
 }
 
 function chooseSpawn(room, random) {
@@ -114,6 +122,7 @@ function createPlayer(room, name, now) {
     health: MAX_HEALTH, armor: 0, dead: false, deadAt: 0,
     spawnProtectedUntil: now + SPAWN_PROTECTION_MS,
     ammo: freshAmmo(), inventory: createInventory(), lastUseAt: -Infinity,
+    nextShotAt: 0,
     connected: true, socketId: null, lastMoveAt: now, hasMoved: false,
     lastSafe: { ...spawn }, droneAnchor: null, recoverAt: 0, disconnectTimer: null,
     voiceRequested: false, voiceAttempts: [],
@@ -216,6 +225,7 @@ function finishReload(player, now) {
     state.magazine += count;
     state.reserve -= count;
     state.reloadingUntil = 0;
+    state.revision = (state.revision ?? 0) + 1;
   }
 }
 
@@ -788,7 +798,7 @@ export function createMultiplayerServer({
           const applied = applySupply(state, pickup.itemId);
           if (!applied.applied) break;
           state = { ...state, health: applied.health, armor: applied.armor,
-            ammo: applied.ammo };
+            ammo: revisedAmmo(state.ammo, applied.ammo) };
           count++;
         }
         if (!count) return safeAck(ack, failure(pickup.kind === 'medkit'
@@ -903,10 +913,14 @@ export function createMultiplayerServer({
       const session = getSession(socket);
       if (!session || session.player.dead) return safeAck(ack, failure('not_available'));
       const { room, player } = session;
-      const weapon = WEAPONS[data?.weapon];
+      if (player.mode !== 'walk') return safeAck(ack, failure('not_on_foot'));
+      const weapon = Object.hasOwn(WEAPONS, data?.weapon) ? WEAPONS[data.weapon] : null;
       if (!weapon) return safeAck(ack, failure('invalid_weapon'));
       if (!player.inventory.guns.includes(data.weapon)) {
         return safeAck(ack, failure('gun_not_owned'));
+      }
+      if (player.inventory.selectedGun !== data.weapon) {
+        return safeAck(ack, failure('gun_not_selected'));
       }
       const now = clock(); finishReload(player, now);
       const ammo = player.ammo[data.weapon];
@@ -914,6 +928,7 @@ export function createMultiplayerServer({
         return safeAck(ack, failure('reload_unavailable'));
       }
       ammo.reloadingUntil = now + weapon.reloadMs;
+      ammo.revision = (ammo.revision ?? 0) + 1;
       io.to(roomChannel(room.code)).emit('combat:event', {
         kind: 'reload', playerId: player.id, weapon: data.weapon, at: now,
         finishesAt: ammo.reloadingUntil,
@@ -926,9 +941,16 @@ export function createMultiplayerServer({
       if (!session || session.player.dead) return safeAck(ack, failure('not_available'));
       const { room, player } = session;
       if (player.mode !== 'walk') return safeAck(ack, failure('not_on_foot'));
-      const weapon = WEAPONS[data?.weapon];
+      const weapon = Object.hasOwn(WEAPONS, data?.weapon) ? WEAPONS[data.weapon] : null;
+      if (data?.shotId !== undefined
+        && (!Number.isSafeInteger(data.shotId) || data.shotId <= 0)) {
+        return safeAck(ack, failure('invalid_shot_id'));
+      }
       if (weapon && !player.inventory.guns.includes(data.weapon)) {
         return safeAck(ack, failure('gun_not_owned'));
+      }
+      if (weapon && player.inventory.selectedGun !== data.weapon) {
+        return safeAck(ack, failure('gun_not_selected'));
       }
       const direction = normalizedDirection(data?.direction);
       if (!weapon || !direction || !validWorldPosition(data?.origin)
@@ -943,12 +965,20 @@ export function createMultiplayerServer({
       if (alignment < 0.5) return safeAck(ack, failure('invalid_facing'));
       const now = clock(); finishReload(player, now);
       const ammo = player.ammo[data.weapon];
+      if (data.shotId !== undefined && data.shotId <= (ammo.lastShotId ?? 0)) {
+        return safeAck(ack, failure('stale_shot'));
+      }
       if (ammo.reloadingUntil > now) return safeAck(ack, failure('reloading'));
       if (!ammo.magazine) return safeAck(ack, failure('empty_magazine'));
-      if (now - ammo.lastFiredAt < weapon.fireIntervalMs) {
+      if (now < player.nextShotAt || now - ammo.lastFiredAt < weapon.fireIntervalMs) {
         return safeAck(ack, failure('fire_rate_limited'));
       }
       ammo.lastFiredAt = now; ammo.magazine--;
+      ammo.revision = (ammo.revision ?? 0) + 1;
+      ammo.lastShotId = Math.max(ammo.lastShotId ?? 0, data.shotId ?? 0);
+      // The cadence also follows the player, so switching guns cannot bypass
+      // the recovery time of a shot that has already been accepted.
+      player.nextShotAt = now + weapon.fireIntervalMs;
       // Spawn protection ends when a protected player chooses to attack.
       player.spawnProtectedUntil = Math.min(player.spawnProtectedUntil, now);
       let nearest = null;
@@ -1043,6 +1073,7 @@ export function createMultiplayerServer({
         vehicleId: null, health: MAX_HEALTH, armor: 0, dead: false, deadAt: 0,
         spawnProtectedUntil: now + SPAWN_PROTECTION_MS, ammo: freshAmmo(),
         inventory: createInventory({ guns: ['revolver'] }), lastUseAt: -Infinity,
+        nextShotAt: 0,
         lastMoveAt: now, hasMoved: false, lastSafe: { ...spawn }, droneAnchor: null });
       io.to(roomChannel(room.code)).emit('combat:event', {
         kind: 'respawn', playerId: player.id, spawn, at: now,

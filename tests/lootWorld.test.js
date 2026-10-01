@@ -55,3 +55,23 @@ test('pickup meshes stay bounded and distance culled', () => {
   loot.dispose();
   loot.dispose();
 });
+
+test('automatic weapon pickups expose their labels with pooled, disposable geometry', () => {
+  const scene = new THREE.Scene();
+  const loot = createLootWorld(scene, () => 24);
+  loot.sync([pickup('smg-loot', 'smg', 1, 0), pickup('lmg-loot', 'lmg', 4, 0)]);
+  assert.equal(loot.visualCount, 2);
+  assert.equal(loot.nearby(1, 0).item.label, 'Patrol SMG');
+  assert.equal(loot.nearby(4, 0).item.label, 'Support LMG');
+  const geometries = new Set();
+  loot.group.traverse((object) => {
+    if (!object.isMesh) return;
+    assert.ok(object.geometry.attributes.position.count > 0);
+    geometries.add(object.geometry);
+  });
+  assert.ok(geometries.size <= 4, 'automatic pickups share the four existing primitives');
+  let disposals = 0;
+  for (const geometry of geometries) geometry.addEventListener('dispose', () => disposals++);
+  loot.dispose();
+  assert.equal(disposals, geometries.size);
+});

@@ -9,11 +9,20 @@ export const RECONNECT_GRACE_MS = 120000;
 
 export const WEAPONS = Object.freeze({
   revolver: Object.freeze({ label: 'Service Revolver', magazine: 6, reserve: 36,
-    reloadMs: 1800, fireIntervalMs: 320, damage: 34, range: 65 }),
+    reloadMs: 1800, fireIntervalMs: 320, damage: 34, range: 65,
+    automatic: false, recoil: 1, movementMultiplier: 1, spread: 0.005 }),
   rifle: Object.freeze({ label: 'Hunting Rifle', magazine: 5, reserve: 25,
-    reloadMs: 2400, fireIntervalMs: 850, damage: 60, range: 130 }),
+    reloadMs: 2400, fireIntervalMs: 850, damage: 60, range: 130,
+    automatic: false, recoil: 1.4, movementMultiplier: 1, spread: 0.003 }),
   shotgun: Object.freeze({ label: 'Pump Shotgun', magazine: 5, reserve: 25,
-    reloadMs: 2600, fireIntervalMs: 900, damage: 78, range: 32 }),
+    reloadMs: 2600, fireIntervalMs: 900, damage: 78, range: 32,
+    automatic: false, recoil: 1.7, movementMultiplier: 0.96, spread: 0.02 }),
+  smg: Object.freeze({ label: 'Patrol SMG', magazine: 30, reserve: 150,
+    reloadMs: 2250, fireIntervalMs: 100, damage: 18, range: 70,
+    automatic: true, recoil: 0.55, movementMultiplier: 0.98, spread: 0.012 }),
+  lmg: Object.freeze({ label: 'Support LMG', magazine: 60, reserve: 180,
+    reloadMs: 3600, fireIntervalMs: 125, damage: 24, range: 110,
+    automatic: true, recoil: 0.85, movementMultiplier: 0.84, spread: 0.018 }),
 });
 
 export const EXPLOSIVES = Object.freeze({

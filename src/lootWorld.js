@@ -47,8 +47,10 @@ function part(parent, geometry, material, size, position, rotationZ = 0) {
 function makeGun(group, resources, itemId) {
   const { geometry: g, material: m } = resources;
   const long = itemId !== 'revolver';
-  const barrelLength = itemId === 'rifle' ? 0.92 : itemId === 'shotgun' ? 0.72 : 0.34;
-  const receiverLength = long ? 0.39 : 0.25;
+  const automatic = itemId === 'smg' || itemId === 'lmg';
+  const barrelLength = itemId === 'rifle' ? 0.92 : itemId === 'shotgun' ? 0.72
+    : itemId === 'lmg' ? 1.02 : itemId === 'smg' ? 0.46 : 0.34;
+  const receiverLength = itemId === 'lmg' ? 0.56 : long ? 0.39 : 0.25;
   const silhouette = new THREE.Group();
   silhouette.position.y = 0.53;
   silhouette.rotation.y = -Math.PI / 4;
@@ -57,13 +59,31 @@ function makeGun(group, resources, itemId) {
     [0.01, 0, 0]);
   part(silhouette, g.cylinder, m.steel, [0.048, barrelLength, 0.048],
     [receiverLength * 0.5 + barrelLength * 0.5, 0.055, 0], -Math.PI / 2);
-  part(silhouette, g.box, m.timber, [long ? 0.36 : 0.11, 0.14, 0.13],
+  part(silhouette, g.box, automatic ? m.olive : m.timber,
+    [itemId === 'smg' ? 0.25 : long ? 0.36 : 0.11, 0.14, 0.13],
     [-receiverLength * 0.5 - (long ? 0.18 : 0.04), -0.045, 0]);
-  part(silhouette, g.box, m.timber, [0.12, 0.24, 0.12],
+  part(silhouette, g.box, automatic ? m.darkSteel : m.timber, [0.12, 0.24, 0.12],
     [-receiverLength * 0.22, -0.18, 0], -0.24);
   if (itemId === 'shotgun') {
     part(silhouette, g.cylinder, m.darkSteel, [0.038, barrelLength * 0.72, 0.038],
       [receiverLength * 0.5 + barrelLength * 0.44, -0.035, 0], -Math.PI / 2);
+  }
+  if (automatic) {
+    // Reuse the pickup geometry pool: a narrow SMG magazine and broad LMG
+    // box magazine make them recognizable without loading another asset.
+    part(silhouette, g.box, m.darkSteel,
+      itemId === 'smg' ? [0.11, 0.31, 0.12] : [0.28, 0.26, 0.28],
+      [receiverLength * 0.15, -0.22, 0], itemId === 'smg' ? -0.12 : 0);
+    part(silhouette, g.box, m.olive,
+      [barrelLength * 0.34, 0.13, 0.17],
+      [receiverLength * 0.5 + barrelLength * 0.19, 0.005, 0]);
+  }
+  if (itemId === 'lmg') {
+    for (const side of [-1, 1]) part(silhouette, g.box, m.darkSteel,
+      [0.035, 0.24, 0.035],
+      [receiverLength * 0.5 + barrelLength * 0.61, -0.06, side * 0.1]);
+    part(silhouette, g.box, m.darkSteel, [0.17, 0.055, 0.065],
+      [0.01, 0.15, 0]);
   }
 }
 

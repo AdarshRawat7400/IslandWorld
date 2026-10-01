@@ -52,6 +52,8 @@ async function roomHarness(t, mode) {
   const room = server.rooms.get(joined.code);
   room.world.weather = 'clear';
   const shooter = room.players.get(joined.selfId);
+  assert.equal((await request(shooterSocket, 'inventory:select', { weapon: 'rifle' })).ok,
+    true);
   const bystander = room.players.get(witness.selfId);
   const animal = wildlifeTargetsAt(SERVER_WILDLIFE_HOMES, 0, 'clear',
     { multiplayer: true, terrainHeight: islandTerrainHeightAt })

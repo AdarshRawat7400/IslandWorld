@@ -38,10 +38,13 @@ async function setup(t, mode = 'pvp') {
     z: 0, yaw: 0, pitch: 0 });
   Object.assign(target, { x: 100, y: playerEyeHeightAt(100, -10),
     z: -10, yaw: Math.PI, pitch: 0 });
-  const shot = (weapon = 'revolver', override = {}) => emit(shooterSocket, 'combat:fire', {
-    weapon, origin: { x: shooter.x, y: shooter.y, z: shooter.z },
-    direction: { x: 0, y: 0, z: -1 }, ...override,
-  });
+  const shot = async (weapon = 'revolver', override = {}) => {
+    await emit(shooterSocket, 'inventory:select', { weapon });
+    return emit(shooterSocket, 'combat:fire', {
+      weapon, origin: { x: shooter.x, y: shooter.y, z: shooter.z },
+      direction: { x: 0, y: 0, z: -1 }, ...override,
+    });
+  };
   return { server, room, shooter, target, shooterSocket, targetSocket,
     shot, advance: (ms) => { now += ms; }, now: () => now };
 }

@@ -69,14 +69,20 @@ test('two isolated Socket.IO identities agree on driving, combat, respawn, mode 
   Object.assign(bob, { x: 100, y: playerEyeHeightAt(100, -10), z: -10,
     yaw: Math.PI, pitch: 0, mode: 'walk', hasMoved: true });
   now += SPAWN_PROTECTION_MS + 1;
-  const fireA = (weapon) => request(a, 'combat:fire', {
-    weapon, origin: { x: alice.x, y: alice.y, z: alice.z },
-    direction: { x: 0, y: 0, z: -1 },
-  });
-  const fireB = (weapon) => request(b, 'combat:fire', {
-    weapon, origin: { x: bob.x, y: bob.y, z: bob.z },
-    direction: { x: 0, y: 0, z: 1 },
-  });
+  const fireA = async (weapon) => {
+    await request(a, 'inventory:select', { weapon });
+    return request(a, 'combat:fire', {
+      weapon, origin: { x: alice.x, y: alice.y, z: alice.z },
+      direction: { x: 0, y: 0, z: -1 },
+    });
+  };
+  const fireB = async (weapon) => {
+    await request(b, 'inventory:select', { weapon });
+    return request(b, 'combat:fire', {
+      weapon, origin: { x: bob.x, y: bob.y, z: bob.z },
+      direction: { x: 0, y: 0, z: 1 },
+    });
+  };
   const observedShot = observe(b, 'combat:event', (event) =>
     event.kind === 'shot' && event.shooterId === created.selfId);
   let shot = await fireA('revolver');

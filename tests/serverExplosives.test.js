@@ -76,6 +76,8 @@ test('room pickups enforce reach, gun ownership and capacity, and reconnect pres
   assert.equal(collected.ok, true);
   assert.deepEqual(collected.inventory.guns, ['revolver', 'rifle', 'shotgun']);
   assert.equal(game.room.pickups.has(shotgun.id), false);
+  assert.equal((await request(game.firstSocket, 'inventory:select', { weapon: 'shotgun' }))
+    .inventory.selectedGun, 'shotgun');
   assert.equal((await request(game.firstSocket, 'combat:fire', {
     weapon: 'shotgun', origin: { x: player.x, y: player.y, z: player.z },
     direction: { x: 0, y: 0, z: -1 },
@@ -233,6 +235,8 @@ test('PvP gunfire drains armor before health and reports the damage split', asyn
   game.advance(SPAWN_PROTECTION_MS + 1);
   const events = [];
   game.secondSocket.on('combat:event', (event) => events.push(event));
+  assert.equal((await request(game.firstSocket, 'inventory:select', { weapon: 'rifle' })).ok,
+    true);
   const fire = () => request(game.firstSocket, 'combat:fire', {
     weapon: 'rifle', origin: { x: attacker.x, y: attacker.y, z: attacker.z },
     direction: { x: 0, y: 0, z: -1 }, damage: 9999,

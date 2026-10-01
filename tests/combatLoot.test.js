@@ -112,12 +112,28 @@ test('seeded world pickups change by room while keeping stable IDs and item quot
   assert.equal(new Set(first.map((item) => item.id)).size, first.length);
   assert.equal(new Set(first.map((item) => `${item.x},${item.z}`)).size, first.length);
   assert.equal(first.filter((item) => item.itemId === 'shotgun').length, 4);
+  assert.equal(first.filter((item) => item.itemId === 'smg').length, 3);
+  assert.equal(first.filter((item) => item.itemId === 'lmg').length, 2);
   assert.equal(first.filter((item) => item.itemId === 'grenade').length, 12);
   assert.equal(first.filter((item) => item.itemId === 'mine').length, 10);
   assert.equal(first.filter((item) => item.itemId === 'medkit').length, 7);
   assert.equal(first.filter((item) => item.itemId === 'ammo').length, 8);
   assert.equal(first.filter((item) => item.itemId === 'armor').length, 7);
   assert.ok(first.every((item) => item.count === 1 && item.source === 'world'));
+});
+
+test('automatic weapons share the three-gun cap and remain recoverable from death drops', () => {
+  const smgLoadout = collectItem(createInventory(), 'smg');
+  assert.deepEqual(smgLoadout.guns, ['revolver', 'rifle', 'smg']);
+  assert.equal(collectItem(smgLoadout, 'lmg'), smgLoadout,
+    'a fourth firearm cannot be added');
+  const lmgLoadout = collectItem(createInventory(), 'lmg');
+  assert.equal(selectGun(lmgLoadout, 'lmg').selectedGun, 'lmg');
+  assert.equal(cycleGun(lmgLoadout, -1).selectedGun, 'lmg');
+  const drops = inventoryDrops(lmgLoadout, { x: 100, z: 0 }, 'lmg-death');
+  assert.deepEqual(drops.map((item) => item.itemId), ['rifle', 'lmg']);
+  assert.deepEqual(createInventory({ guns: ['revolver', 'rifle', 'smg', 'lmg'] }).guns,
+    ['revolver', 'rifle', 'smg']);
 });
 
 test('seeded pickup clearings are reachable ground away from cliffs, lake, roads, and collision', () => {

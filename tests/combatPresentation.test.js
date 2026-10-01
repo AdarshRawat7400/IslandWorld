@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { combatHudVisibility, createCombatPresentation, distantShotGain,
   equipmentSlots, normalizeCombatHudState, normalizeEquipmentInventory,
-  sampleTracerTravel, visualTracerImpactDistance } from '../src/combatPresentation.js';
+  sampleReloadAnimation, sampleTracerTravel, visualTracerImpactDistance } from '../src/combatPresentation.js';
 import { createExplosivePresentation, sampleExplosiveArc } from '../src/explosivePresentation.js';
 import { MAX_HEALTH, WEAPONS } from '../src/multiplayerRules.js';
 import { MAX_ARMOR } from '../src/combatLoot.js';
@@ -319,4 +319,149 @@ test('server hit distance caps a cosmetic muzzle-origin tracer at the same impac
   assert.equal(visualTracerImpactDistance({ weapon: 'revolver',
     origin: [0, 1.7, 0], direction: [0, 0, -1],
     muzzle: [0.4, 1.3, -1], distance: 100 }), WEAPONS.revolver.range);
+});
+
+function makeCombatFixture(options = {}) {
+  const doc = { createElement(tag) { return new FakeElement(this, tag); },
+    getElementById() { return null; } };
+  const root = new FakeElement(doc, 'body');
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera();
+  const combat = createCombatPresentation({ camera, scene, root, ...options });
+  combat.setState({ active: true, serverNow: 1000 });
+  return { root, scene, camera, combat,
+    view: camera.children.find((item) => item.name === 'First-person equipment viewmodel') };
+}
+
+test('every weapon reload uses authoritative remaining time and closes its mechanism at completion', () => {
+  for (const [weapon, rules] of Object.entries(WEAPONS)) {
+    const start = sampleReloadAnimation(weapon, rules.reloadMs);
+    const middle = sampleReloadAnimation(weapon, rules.reloadMs / 2);
+    const end = sampleReloadAnimation(weapon, 0);
+    assert.equal(start.progress, 0);
+    assert.equal(start.opening, 0);
+    assert.equal(middle.progress, 0.5);
+    assert.equal(middle.opening, 1);
+    assert.equal(end.progress, 1);
+    assert.equal(end.opening, 0);
+    assert.equal(end.magazine, 0);
+    assert.equal(end.charging, 0);
+  }
+  assert.equal(sampleReloadAnimation('invalid', 100), null);
+  assert.equal(sampleReloadAnimation('rifle', NaN), null);
+});
+
+test('reload hand and mechanism restore immediately on holster, switch and death', () => {
+  const { combat, view, scene } = makeCombatFixture();
+  const gun = view.getObjectByName('revolver');
+  const support = gun.getObjectByName('Reload support hand');
+  const cylinder = gun.getObjectByName('Swing-out cylinder');
+  combat.setState({ serverNow: 1000, ammo: { magazine: 1, reserve: 20,
+    reloadingUntil: 1000 + WEAPONS.revolver.reloadMs / 2 } });
+  combat.update(0.01);
+  assert.ok(support.position.length() > 0.02);
+  assert.ok(cylinder.position.x < -0.10);
+  assert.ok(combat.reloadProgress > 0.5 && combat.reloadProgress < 0.52);
+  combat.selectEquipment('unarmed');
+  assert.equal(support.position.length(), 0);
+  assert.equal(cylinder.position.length(), 0);
+  assert.equal(combat.reloadProgress, null);
+  combat.selectWeapon('rifle');
+  combat.setState({ serverNow: 2000, ammo: { magazine: 0, reserve: 10,
+    reloadingUntil: 2000 + WEAPONS.rifle.reloadMs / 2 } });
+  combat.update(0.01);
+  const rifle = view.getObjectByName('rifle');
+  assert.ok(rifle.getObjectByName('Reload support hand').position.length() > 0);
+  combat.showDeath();
+  assert.equal(rifle.getObjectByName('Reload support hand').position.length(), 0);
+  assert.equal(combat.reloadProgress, null);
+  combat.dispose();
+  assert.equal(scene.children.length, 0);
+});
+
+test('automatic weapons keep grass-safe materials, detachable reload magazines and correct muzzle traces', () => {
+  const { combat, camera, view, scene } = makeCombatFixture();
+  combat.setInventory({ guns: ['smg', 'lmg', 'revolver'] });
+  for (const weapon of ['smg', 'lmg']) {
+    assert.equal(combat.selectWeapon(weapon), true);
+    const model = view.getObjectByName(weapon);
+    model.traverse((node) => {
+      if (!node.isMesh || node.parent === model) return;
+      for (const material of Array.isArray(node.material) ? node.material : [node.material]) {
+        assert.equal(material.transparent, true);
+        assert.equal(material.depthTest, false);
+        assert.equal(material.depthWrite, false);
+        assert.ok(node.renderOrder >= 10000);
+      }
+    });
+    const magazine = model.getObjectByName(weapon === 'smg'
+      ? 'Detachable patrol magazine' : 'Detachable support box magazine');
+    const restY = magazine.position.y;
+    const now = weapon === 'smg' ? 4000 : 8000;
+    combat.setState({ serverNow: now, ammo: { magazine: 0, reserve: 100,
+      reloadingUntil: now + WEAPONS[weapon].reloadMs / 2 } });
+    combat.update(0.01);
+    assert.ok(magazine.position.y < restY - 0.25);
+    combat.setState({ serverNow: now + WEAPONS[weapon].reloadMs,
+      ammo: { magazine: WEAPONS[weapon].magazine, reserve: 60, reloadingUntil: 0 } });
+    combat.update(0.01);
+    assert.equal(magazine.position.y, restY);
+    combat.fire({ weapon, origin: [0, 0, 0], direction: [0, 0, -1] });
+    assert.ok(combat.activeSmokeCount > 0);
+    const muzzle = model.getObjectByName('Muzzle flash').getWorldPosition(new THREE.Vector3());
+    const plume = scene.getObjectByName('Bounded world muzzle smoke').children.find((item) =>
+      item.visible && item.position.distanceTo(muzzle) < 1e-8);
+    assert.ok(plume, 'smoke must start at the actual barrel-end flash');
+    const tracer = scene.getObjectByName(`Muzzle-origin ${weapon} tracer`);
+    assert.ok(tracer);
+    const travel = new THREE.Vector3(0, 1, 0).applyQuaternion(tracer.quaternion);
+    assert.ok(travel.dot(muzzle.clone().negate().add(new THREE.Vector3(0, 0,
+      -WEAPONS[weapon].range)).normalize()) > 0.999);
+    assert.ok(sampleTracerTravel(weapon, 0.02).head > 0);
+    assert.ok(camera.children.includes(view));
+  }
+  for (let i = 0; i < 80; i += 1) combat.remoteFire({ weapon: 'lmg',
+    origin: [0, 1, -10], direction: [0, 0, -1] });
+  assert.ok(combat.activeSmokeCount <= 36);
+  const smoke = scene.getObjectByName('Bounded world muzzle smoke');
+  assert.equal(smoke.children.length, 36);
+  const item = smoke.children.find((sprite) => sprite.visible);
+  const oldX = item.position.x;
+  combat.update(0.1, { wind: { x: 8, z: 0 } });
+  assert.ok(item.position.x > oldX);
+  for (let i = 0; i < 12; i += 1) combat.update(0.1);
+  assert.equal(combat.activeSmokeCount, 0);
+  combat.dispose();
+  assert.equal(scene.children.length, 0);
+});
+
+test('mobile held trigger releases on pointer cancellation and menu wheel', () => {
+  const edges = [];
+  let shots = 0;
+  const { combat, root } = makeCombatFixture({ mobile: true,
+    onTriggerChange(value) { edges.push(value); }, onFire() { shots += 1; } });
+  const fire = root.find((element) => element.attributes.get('aria-label') === 'Fire weapon');
+  fire.dispatch('pointerdown');
+  assert.equal(shots, 1);
+  fire.dispatch('pointercancel');
+  assert.deepEqual(edges, [true, false]);
+  fire.dispatch('pointerdown');
+  combat.openEquipmentWheel();
+  assert.deepEqual(edges, [true, false, true, false]);
+  combat.dispose();
+});
+
+test('sprint lowers gun smoothly and aiming removes sprint pose', () => {
+  const { combat, view } = makeCombatFixture();
+  for (let i = 0; i < 30; i += 1) combat.update(1 / 60,
+    { moving: true, speed: 6, sprintFactor: 1 });
+  assert.ok(view.position.y < -0.41);
+  assert.ok(view.rotation.x < -0.20);
+  combat.setAiming(true);
+  assert.equal(combat.aiming, true);
+  for (let i = 0; i < 60; i += 1) combat.update(1 / 60,
+    { moving: false, speed: 0, sprintFactor: 1 });
+  assert.ok(view.position.y > -0.20);
+  assert.ok(Math.abs(view.rotation.x) < 0.02);
+  combat.dispose();
 });

@@ -22,6 +22,7 @@
       <div id="vehicle-hud" hidden></div>
       <div id="drone-hud" hidden>DRONE VIEW <span id="drone-altitude"></span></div>
       <div id="stance-hud" hidden></div>
+      <div id="stamina-hud" hidden><span id="stamina-label">STAMINA</span><div id="stamina-meter" role="progressbar" aria-label="Stamina" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><span id="stamina-fill"></span></div></div>
       <div class="controls-hint">WASD MOVE · Q / TAB WEAPON WHEEL · H HOLSTER · C CROUCH · Z PRONE · E USE · ESC MENU</div>
     </div>
     <section id="screen" class="screen" aria-label="Island World menu">
@@ -36,7 +37,7 @@
           <label>PIANO <output id="music-value">40%</output><input id="music-volume" type="range" min="0" max="100" step="5" value="40" /></label>
           <label>SEA <output id="sea-value">100%</output><input id="sea-volume" type="range" min="0" max="100" step="5" value="100" /></label>
         </div>
-        <p class="smallprint">Desktop: WASD move · mouse look · Shift run · C crouch · Z prone · H holster or draw · hold Q or Tab for weapon wheel (tap to cycle) · left click fire or use · R reload · E talk / pick up / drive · G drone · M map · F flashlight · U audio · Esc menu<br>Landscape touch: left stick move · drag right to look · tap SPRINT to toggle running · POSE cycles crouch, prone and standing · WHEEL selects equipment or unarmed · MORE opens map, drone, light and audio</p>
+        <p class="smallprint">Desktop: WASD move · mouse look · Shift sprint (uses stamina) · C crouch · Z prone · H holster or draw · hold Q or Tab for weapon wheel (tap to cycle) · left click fire or use (hold for SMG / LMG) · right click aim · R reload · E talk / pick up / drive · G drone · M map · F flashlight · U audio · Esc menu<br>Landscape touch: left stick move · drag right to look · tap SPRINT to toggle running · hold FIRE for automatic weapons · AIM steadies your shot · POSE cycles crouch, prone and standing · WHEEL selects equipment or unarmed · MORE opens map, drone, light and audio</p>
       </div>
       <div class="screen-foot">GREYWAKE ISLAND · WORLD FOUNDATION</div>
     </section>

@@ -151,3 +151,23 @@ test('health respawn restores standing stance and eye height', async (t) => {
   assert.ok(Math.abs(player.y - playerEyeHeightAt(player.x, player.z)) < 1e-8);
   assert.equal(player.health, 100);
 });
+
+test('standing travel accepts a 7.3 m/s sprint while rejecting a teleport', async (t) => {
+  const game = await harness(t);
+  const socket = await game.connectPlayer();
+  const joined = await request(socket, 'room:create', { name: 'Runner', mode: 'explore' });
+  const player = game.server.rooms.get(joined.code).players.get(joined.selfId);
+  const startX = player.x, z = player.z;
+  move(socket, startX + 0.1, z, 'stand');
+  await delay(15);
+  assert.equal(player.hasMoved, true);
+  game.advance(1000);
+  move(socket, startX + 7.4, z, 'stand');
+  await delay(15);
+  assert.equal(player.x, startX + 7.4,
+    'the sprint controller maximum fits the standing server travel allowance');
+  game.advance(1000);
+  move(socket, startX + 27.4, z, 'stand');
+  await delay(15);
+  assert.equal(player.x, startX + 7.4, 'a twenty-metre second is rejected');
+});

@@ -51,6 +51,8 @@ import { createMultiplayerRoomUI } from './multiplayerRoomUi.js';
 import { createRemotePlayers } from './remotePlayers.js';
 import { createCombatPresentation } from './combatPresentation.js';
 import { playerStance, togglePlayerStance } from './playerStance.js';
+import { createPlayerLocomotion } from './playerLocomotion.js';
+import { createAmmoPrediction } from './ammoPrediction.js';
 import { WEAPONS, EXPLOSIVES, SAFE_SPAWNS, RESPAWN_DELAY_MS,
   SPAWN_PROTECTION_MS, blastDamageAt, rayWildlifeHit } from './multiplayerRules.js';
 import { createNpcCombatant, rayNpcHit, npcThreatenedByShot,
@@ -96,8 +98,13 @@ camera.rotation.order = 'YXZ';
 scene.add(camera);
 const cinematicCapture = captureEnabled ? createCinematicCapture(camera) : null;
 const ordinaryRenderProfile = selectRenderProfile(detectRenderEnvironment());
+const combatDiagnosticProfile = import.meta.env.DEV
+  && new URLSearchParams(location.search).get('test') === 'combat'
+  && new URLSearchParams(location.search).get('qaQuality') === 'low';
 const captureQuality = new URLSearchParams(location.search).get('captureQuality');
-const renderProfile = captureEnabled && captureQuality === 'balanced'
+const renderProfile = combatDiagnosticProfile
+  ? selectRenderProfile({ mobile: true, deviceMemory: 2, hardwareConcurrency: 4 })
+  : captureEnabled && captureQuality === 'balanced'
   ? { ...ordinaryRenderProfile, grassQuality: 28_000,
     grassDensityMultiplier: 6, shadowMapSize: 1024, cloudStepCap: 5 }
   : captureEnabled && captureQuality === 'performance'
@@ -188,11 +195,14 @@ let residents = null;
 const player = { x: 0, z: 270, yaw: 0, pitch: -0.05, walkPhase: 0,
   stance: 'stand' };
 let cameraEyeHeight = playerStance('stand').eyeHeight;
+const locomotion = createPlayerLocomotion();
 // Development-only viewpoints for water and shoreline-detail rendering QA.
 const waterQaView = import.meta.env.DEV ? new URLSearchParams(location.search).get('test') : null;
 if (waterQaView === 'lake') {
   Object.assign(player, { x: INLAND_LAKE.x, z: INLAND_LAKE.z + INLAND_LAKE.radiusZ + 17,
     yaw: 0, pitch: -0.08 });
+} else if (waterQaView === 'combat') {
+  Object.assign(player, { x: -141, z: -75, yaw: -Math.PI / 2, pitch: -0.05 });
 } else if (waterQaView === 'flora') {
   Object.assign(player, { x: -141, z: -75, yaw: -Math.PI / 2, pitch: -0.08 });
 } else if (waterQaView === 'ocean') {
@@ -409,6 +419,8 @@ function currentWeather() {
 }
 
 function requestLook() {
+  // Interactive diagnostics use ordinary DOM controls without mouse capture.
+  if (waterQaView === 'combat') { pointerLockFallback = true; return; }
   if (captureEnabled || !started || menuOpen || mapOpen || touchEnabled) return;
   // Browsers may reject the request if the tab loses focus during navigation.
   // Clicking the canvas again remains a valid retry after that transient case.
@@ -430,6 +442,7 @@ function requestLook() {
 }
 function openMenu() {
   if (!started) return;
+  releaseCombatInput();
   combat.closeEquipmentWheel({ commit: false });
   menuOpen = true;
   keys.clear();
@@ -439,6 +452,7 @@ function openMenu() {
   touchControls.setVisible(false);
 }
 function closeMenu() {
+  combat.unlockAudio();
   if (!started) {
     started = true;
     sound.start();
@@ -470,6 +484,7 @@ function mapSvg() {
 }
 function openMap() {
   if (!started || menuOpen) return;
+  releaseCombatInput();
   combat.closeEquipmentWheel({ commit: false });
   mapOpen = true;
   keys.clear();
@@ -491,6 +506,7 @@ function toggleDrone() {
     || multiplayer.getState().self?.dead
     || (!multiplayer.getState().room && soloHealth <= 0)) return;
   combat.closeEquipmentWheel({ commit: false });
+  releaseCombatInput();
   if (drone.active) { drone.exit(); showToast('ON FOOT'); }
   else {
     setPlayerStance('stand', { quiet: true });
@@ -542,20 +558,23 @@ function pickupLoot(item) {
     return;
   }
   if (inRoom) {
+    const epoch = combatEpoch;
     pickupPending.add(item.id);
     void multiplayer.request('loot:pickup', { id: item.id })
       .then((result) => {
+        if (epoch !== combatEpoch) return;
         currentInventory = createInventory(result.inventory);
-        localAmmo = result.ammo;
+        ammoPrediction.ingest(result.ammo);
+        localAmmo = ammoPrediction.snapshot();
         lastRoomHealth = result.health;
         lastRoomArmor = result.armor;
         combat.setInventory(currentInventory);
         combat.setState({ health: result.health, armor: result.armor,
-          ammo: result.ammo?.[combat.selectedWeapon] });
+          ammo: localAmmo?.[combat.selectedWeapon] });
         showToast(`${item.label.toUpperCase()} COLLECTED`);
       })
-      .catch((error) => showToast(error.message, 1800))
-      .finally(() => pickupPending.delete(item.id));
+      .catch((error) => { if (epoch === combatEpoch) showToast(error.message, 1800); })
+      .finally(() => { if (epoch === combatEpoch) pickupPending.delete(item.id); });
     return;
   }
   const index = soloPickups.findIndex((candidate) => candidate.id === item.id);
@@ -689,6 +708,10 @@ let soloArmor = 0;
 let soloRespawnAt = 0;
 let soloProtectedUntil = 0;
 let soloInventory = createInventory();
+if (waterQaView === 'combat') {
+  // Local rendering/input QA only; no extra weapons in the shipped inventory.
+  soloInventory = createInventory({ guns: ['revolver', 'smg', 'lmg'], selectedGun: 'revolver' });
+}
 let currentInventory = soloInventory;
 let soloPickups = createWorldPickupSpawns(Math.floor(Math.random() * 0xffffffff));
 if (waterQaView === 'pickup') {
@@ -733,12 +756,47 @@ let vehicleSendPending = false;
 let lastCombatVisible = false;
 let lastCombatHolstered = false;
 const lastLocalShot = Object.fromEntries(Object.keys(WEAPONS).map((id) => [id, -Infinity]));
+const ammoPrediction = createAmmoPrediction();
+let combatEpoch = 0;
+let selectionGeneration = 0;
+let selectionPending = false;
+let triggerHeld = false;
+let nextLocalShotAt = -Infinity;
+let lastFireErrorAt = -Infinity;
+let qaRunUntil = 0;
+let qaFireUntil = 0;
+let combatQa = null;
+
+function releaseCombatInput() {
+  qaRunUntil = qaFireUntil = 0;
+  triggerHeld = false;
+  locomotion.reset();
+  footstepDistance = 0;
+}
+
+function resetAmmoPrediction(ammo = {}) {
+  pickupPending.clear();
+  combatEpoch += 1;
+  selectionGeneration += 1;
+  selectionPending = false;
+  ammoPrediction.reset(ammo);
+  releaseCombatInput();
+  nextLocalShotAt = -Infinity;
+  for (const id of GUN_IDS) lastLocalShot[id] = -Infinity;
+}
+
+function refreshPredictedAmmo() {
+  localAmmo = ammoPrediction.snapshot();
+  combat.setState({ ammo: localAmmo[combat.selectedWeapon], serverNow: roomServerNow() });
+}
 
 function roomServerNow() {
   return roomClock ? roomClock.serverNow + performance.now() - roomClock.receivedAt : Date.now();
 }
 
 function resetRoomPlayer(spawn, { fade = true } = {}) {
+  releaseCombatInput();
+  locomotion.reset({ refill: true });
   driving.forceExit();
   drone.exit();
   player.stance = 'stand';
@@ -806,6 +864,7 @@ function applyRoomSnapshot(room) {
     combat.showDamage(lostHealth + lostArmor);
   }
   if (self.dead && lastRoomHealth !== 0) {
+    resetAmmoPrediction(self.ammo);
     combat.showDeath();
     driving.forceExit();
     drone.exit();
@@ -813,17 +872,19 @@ function applyRoomSnapshot(room) {
     touchControls.reset();
   }
   if (!self.dead && lastRoomHealth === 0) {
+    resetAmmoPrediction(self.ammo);
     resetRoomPlayer(self);
     combat.showRespawn();
   }
   lastRoomHealth = self.health;
   lastRoomArmor = self.armor ?? 0;
-  localAmmo = self.ammo;
+  ammoPrediction.ingest(self.ammo);
+  localAmmo = ammoPrediction.snapshot();
   if (self.inventory) {
     currentInventory = createInventory(self.inventory);
     combat.setInventory(currentInventory);
   }
-  combat.setState({ mode: room.mode, ammo: self.ammo?.[combat.selectedWeapon],
+  combat.setState({ mode: room.mode, ammo: localAmmo?.[combat.selectedWeapon],
     health: self.health, armor: self.armor, dead: self.dead,
     protectedUntil: self.spawnProtectedUntil,
     respawnAt: self.respawnAvailableAt, serverNow: room.serverNow });
@@ -834,7 +895,7 @@ function roomCombatReady() {
   return Boolean((!state.room || state.connected) && started && !menuOpen
     && !mapOpen && !drone.active && !driving.active && !cinematicCapture?.active
     && cliffFall.phase === 'grounded' && !state.self?.dead
-    && (state.room || soloHealth > 0));
+    && !combat.equipmentWheelOpen && (state.room || soloHealth > 0));
 }
 
 function setPlayerStance(stance, { quiet = false } = {}) {
@@ -843,6 +904,7 @@ function setPlayerStance(stance, { quiet = false } = {}) {
     || multiplayer.getState().self?.dead
     || (!multiplayer.getState().room && soloHealth <= 0)) return false;
   if (player.stance === stance) return true;
+  locomotion.reset();
   player.stance = stance;
   combat.setState({ stance });
   if (!quiet) showToast(stance === 'stand' ? 'STANDING'
@@ -1076,19 +1138,36 @@ function settleSoloWildlife(now = performance.now()) {
 
 async function fireWeapon() {
   if (!roomCombatReady() || !GUN_IDS.includes(combat.selectedEquipment)
-    || !currentInventory.guns.includes(combat.selectedEquipment)) return;
+    || !currentInventory.guns.includes(combat.selectedEquipment) || selectionPending) return;
   const inRoom = Boolean(multiplayer.getState().room);
   const weapon = combat.selectedEquipment;
   const ammunition = localAmmo?.[weapon];
   const now = performance.now();
   if (!ammunition || ammunition.magazine < 1
     || ammunition.reloadingUntil > (inRoom ? roomServerNow() : now)
+    || now < nextLocalShotAt
     || now - lastLocalShot[weapon] < WEAPONS[weapon].fireIntervalMs) return;
+  const epoch = combatEpoch;
+  const shotId = inRoom ? ammoPrediction.reserve(weapon) : null;
+  if (inRoom && shotId === null) return;
   lastLocalShot[weapon] = now;
+  nextLocalShotAt = now + WEAPONS[weapon].fireIntervalMs + (inRoom ? 8 : 0);
   const origin = { x: camera.position.x, y: camera.position.y, z: camera.position.z };
   const view = camera.getWorldDirection(new THREE.Vector3()).normalize();
+  // Small hip-fire cone. ADS and a supported prone stance tighten automatic fire.
+  const spread = (WEAPONS[weapon].spread || 0) * (combat.aiming ? 0.28 : 1)
+    * (player.stance === 'prone' ? 0.55 : 1);
+  if (spread) {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = Math.sqrt(Math.random()) * spread;
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+    view.addScaledVector(right, Math.cos(angle) * radius)
+      .addScaledVector(up, Math.sin(angle) * radius).normalize();
+  }
   const direction = { x: view.x, y: view.y, z: view.z };
-  localAmmo = { ...localAmmo, [weapon]: { ...ammunition, magazine: ammunition.magazine - 1 } };
+  localAmmo = inRoom ? ammoPrediction.snapshot()
+    : { ...localAmmo, [weapon]: { ...ammunition, magazine: ammunition.magazine - 1 } };
   if (!inRoom) {
     soloAmmo[weapon] = localAmmo[weapon];
     soloProtectedUntil = Math.min(soloProtectedUntil, now);
@@ -1102,6 +1181,8 @@ async function fireWeapon() {
     ? npcHit : animalHit;
   combat.fire({ weapon, origin, direction, local: true,
     hitDistance: firstHit?.distance });
+  player.pitch = clamp(player.pitch + (WEAPONS[weapon].recoil || 0.6)
+    * (combat.aiming ? 0.003 : 0.005), -1.45, 1.45);
   if (!inRoom) {
     if (firstHit === npcHit && npcHit) {
       if (hurtSoloNpc(npcHit.npc, WEAPONS[weapon].damage)) combat.showHit();
@@ -1113,9 +1194,10 @@ async function fireWeapon() {
     return;
   }
   try {
-    const result = await multiplayer.request('combat:fire', { weapon, origin, direction });
-    localAmmo = { ...localAmmo, [weapon]: result.ammo };
-    combat.setState({ ammo: result.ammo });
+    const result = await multiplayer.request('combat:fire', { weapon, origin, direction, shotId });
+    if (epoch !== combatEpoch) return;
+    ammoPrediction.acknowledge(weapon, shotId, result.ammo);
+    refreshPredictedAmmo();
     if (result.hit) {
       if (Number.isFinite(result.hit.distance)) {
         combat.confirmLocalHit(result.hit.distance, { weapon, origin });
@@ -1123,12 +1205,19 @@ async function fireWeapon() {
       combat.showHit();
     }
   } catch (error) {
-    showToast(error.message, 1700);
+    if (epoch !== combatEpoch) return;
+    ammoPrediction.reject(weapon, shotId);
+    refreshPredictedAmmo();
+    if (performance.now() - lastFireErrorAt > 1700) {
+      lastFireErrorAt = performance.now();
+      showToast(error.message, 1700);
+    }
   }
 }
 
 async function reloadWeapon() {
-  if (!roomCombatReady() || !GUN_IDS.includes(combat.selectedEquipment)) return;
+  if (!roomCombatReady() || !GUN_IDS.includes(combat.selectedEquipment) || selectionPending) return;
+  triggerHeld = false;
   const weapon = combat.selectedEquipment;
   if (!multiplayer.getState().room) {
     settleSoloReloads();
@@ -1140,11 +1229,13 @@ async function reloadWeapon() {
     combat.setState({ ammo, serverNow: performance.now() });
     return;
   }
+  const epoch = combatEpoch;
   try {
     const result = await multiplayer.request('combat:reload', { weapon });
-    localAmmo = { ...localAmmo, [weapon]: result.ammo };
-    combat.setState({ ammo: result.ammo });
-  } catch (error) { showToast(error.message, 1700); }
+    if (epoch !== combatEpoch) return;
+    ammoPrediction.ingest({ [weapon]: result.ammo });
+    refreshPredictedAmmo();
+  } catch (error) { if (epoch === combatEpoch) showToast(error.message, 1700); }
 }
 
 function selectEquipment(id) {
@@ -1156,12 +1247,34 @@ function selectEquipment(id) {
     showToast(`${ITEM_DEFINITIONS[id]?.label?.toUpperCase() || 'ITEM'} UNAVAILABLE`, 1400);
     return false;
   }
+  triggerHeld = false;
   if (GUN_IDS.includes(id)) {
     currentInventory = { ...currentInventory, selectedGun: id };
     if (!multiplayer.getState().room) soloInventory = currentInventory;
-    else void multiplayer.request('inventory:select', { weapon: id })
-      .then((result) => { currentInventory = createInventory(result.inventory); })
-      .catch((error) => showToast(error.message, 1700));
+    else {
+      const generation = ++selectionGeneration;
+      const epoch = combatEpoch;
+      selectionPending = true;
+      void multiplayer.request('inventory:select', { weapon: id })
+        .then((result) => {
+          if (generation !== selectionGeneration || epoch !== combatEpoch) return;
+          currentInventory = createInventory(result.inventory);
+          combat.setInventory(currentInventory);
+        })
+        .catch((error) => {
+          if (generation !== selectionGeneration || epoch !== combatEpoch) return;
+          const authoritative = multiplayer.getState().self?.inventory;
+          if (authoritative) {
+            currentInventory = createInventory(authoritative);
+            combat.selectEquipment(currentInventory.selectedGun);
+            combat.setInventory(currentInventory);
+          }
+          showToast(error.message, 1700);
+        })
+        .finally(() => {
+          if (generation === selectionGeneration && epoch === combatEpoch) selectionPending = false;
+        });
+    }
     combat.setState({ ammo: localAmmo?.[id] });
   }
   return true;
@@ -1189,11 +1302,13 @@ async function useEquipment(requestedKind = combat.selectedEquipment) {
     return;
   }
   if (multiplayer.getState().room) {
+    const epoch = combatEpoch;
     try {
       const result = await multiplayer.request('combat:use', { kind, target });
+      if (epoch !== combatEpoch) return;
       currentInventory = createInventory(result.inventory);
       combat.setInventory(currentInventory);
-    } catch (error) { showToast(error.message, 1800); }
+    } catch (error) { if (epoch === combatEpoch) showToast(error.message, 1800); }
     return;
   }
   if (soloExplosives.length >= 8) {
@@ -1229,10 +1344,14 @@ function activateSelectedEquipment() {
 }
 
 async function respawnRoomPlayer() {
-  const self = multiplayer.getState().self;
+  const original = multiplayer.getState();
+  const self = original.self;
   if (!self?.dead || roomServerNow() < self.respawnAvailableAt) return;
   try {
     const result = await multiplayer.request('player:respawn');
+    const current = multiplayer.getState();
+    if (current.selfId !== original.selfId || current.code !== original.code) return;
+    resetAmmoPrediction(result.ammo);
     resetRoomPlayer(result.spawn);
     lastRoomHealth = result.health;
     lastRoomArmor = result.armor;
@@ -1240,6 +1359,7 @@ async function respawnRoomPlayer() {
     if (result.inventory) {
       currentInventory = createInventory(result.inventory);
       combat.setInventory(currentInventory);
+      combat.selectEquipment(currentInventory.selectedGun);
     }
     combat.setState({ health: result.health, armor: result.armor, dead: false,
       protectedUntil: result.spawnProtectedUntil, ammo: result.ammo?.[combat.selectedWeapon] });
@@ -1277,6 +1397,7 @@ function respawnPlayer() {
 
 const combat = createCombatPresentation({ camera, scene, root: document.body,
   mobile: touchEnabled, onFire: fireWeapon, onReload: reloadWeapon,
+  onTriggerChange: (held) => { triggerHeld = held && roomCombatReady(); },
   onAim: (aiming) => combat.setAim(aiming), onSelectWeapon: selectWeapon,
   onSelectEquipment: selectEquipment, onUseEquipment: useEquipment,
   onRespawn: respawnPlayer });
@@ -1284,6 +1405,32 @@ combat.setInventory(soloInventory);
 combat.setState({ mode: 'solo', ammo: localAmmo.revolver,
   health: soloHealth, armor: soloArmor, stance: player.stance,
   serverNow: performance.now() });
+if (waterQaView === 'combat') {
+  combatQa = document.createElement('section');
+  combatQa.id = 'combat-qa';
+  combatQa.setAttribute('aria-label', 'Local combat diagnostics');
+  const readout = document.createElement('output');
+  readout.id = 'combat-qa-state';
+  for (const id of ['revolver', 'smg', 'lmg']) {
+    const button = document.createElement('button');
+    button.textContent = id.toUpperCase();
+    button.addEventListener('click', () => selectEquipment(id));
+    combatQa.append(button);
+  }
+  for (const [label, action] of [
+    ['FIRE 2s', () => { if (roomCombatReady()) { qaFireUntil = performance.now() + 2000; triggerHeld = true; activateSelectedEquipment(); } }],
+    ['RELOAD', () => void reloadWeapon()],
+    ['SPRINT 4s', () => { if (roomCombatReady()) qaRunUntil = performance.now() + 4000; }],
+    ['STOP', releaseCombatInput],
+  ]) {
+    const button = document.createElement('button');
+    button.textContent = label;
+    button.addEventListener('click', action);
+    combatQa.append(button);
+  }
+  combatQa.append(readout);
+  document.body.append(combatQa);
+}
 syncSoloNpcs();
 createMultiplayerRoomUI({ client: multiplayer });
 const voiceChat = createVoiceChat({ client: multiplayer });
@@ -1291,6 +1438,7 @@ const voiceChatUI = createVoiceChatUI({ voice: voiceChat, client: multiplayer,
   mobile: touchEnabled });
 voiceChat.setMode(touchEnabled ? 'open' : 'push-to-talk');
 multiplayer.on('joined', (state) => {
+  resetAmmoPrediction(state.self?.ammo);
   climateSampleTime = -Infinity;
   fauna.resetAnimals();
   soloExplosives = [];
@@ -1303,6 +1451,10 @@ multiplayer.on('joined', (state) => {
   const self = state.self;
   if (self) resetRoomPlayer(self, { fade: false });
   applyRoomSnapshot(state.room);
+  if (self?.inventory?.selectedGun) {
+    combat.selectEquipment(self.inventory.selectedGun);
+    combat.setState({ ammo: localAmmo[self.inventory.selectedGun] });
+  }
   showToast(`JOINED ${state.mode === 'pvp' ? 'PVP' : 'EXPLORE'} ROOM ${state.code}`);
 });
 multiplayer.on('snapshot', applyRoomSnapshot);
@@ -1368,6 +1520,7 @@ multiplayer.on('combat', (event) => {
     combat.setState({ health: event.health, armor: event.armor, dead: event.dead });
   }
   if (event.kind === 'death' && event.playerId === selfId) {
+    resetAmmoPrediction(multiplayer.getState().self?.ammo);
     combat.showDeath();
     combat.setState({ health: 0, armor: 0, dead: true,
       respawnAt: event.respawnAvailableAt });
@@ -1385,6 +1538,7 @@ multiplayer.on('combat', (event) => {
   }
 });
 multiplayer.on('left', () => {
+  resetAmmoPrediction();
   remotePlayers.clear();
   driving.forceExit();
   driving.clearRemoteVehicles();
@@ -1488,6 +1642,7 @@ window.addEventListener('keydown', (event) => {
   if (event.code === 'KeyE') { interact(); return; }
   if (['Tab', 'KeyQ'].includes(event.code) && roomCombatReady()) {
     if (combat.openEquipmentWheel()) {
+      triggerHeld = false;
       wheelPressedAt = performance.now();
       wheelChanged = false;
     }
@@ -1532,6 +1687,7 @@ window.addEventListener('keyup', (event) => {
 let mouseDragging = false;
 let fallbackPointerStart = null;
 window.addEventListener('blur', () => {
+  releaseCombatInput();
   keys.clear(); touchControls.reset(); mouseDragging = false;
   voiceChat.setPushToTalk(false);
   void voiceChat.setMuted(true);
@@ -1548,6 +1704,7 @@ renderer.domElement.addEventListener('pointerdown', (event) => {
   if (event.pointerType === 'mouse' && event.button === 0
     && document.pointerLockElement === renderer.domElement
     && roomCombatReady()) {
+    triggerHeld = GUN_IDS.includes(combat.selectedEquipment);
     activateSelectedEquipment();
   }
   if (!touchEnabled && event.pointerType === 'mouse' && event.button === 0) {
@@ -1556,6 +1713,7 @@ renderer.domElement.addEventListener('pointerdown', (event) => {
   }
 });
 window.addEventListener('pointerup', (event) => {
+  if (event.button === 0) triggerHeld = false;
   if (event.pointerType === 'mouse' && event.button === 0
     && pointerLockFallback && fallbackPointerStart && !fallbackPointerStart.moved
     && Math.hypot(event.clientX - fallbackPointerStart.x,
@@ -1589,6 +1747,15 @@ document.addEventListener('pointerlockerror', () => {
 });
 document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement === renderer.domElement) pointerLockFallback = false;
+  else triggerHeld = false;
+});
+window.addEventListener('pointercancel', () => { triggerHeld = false; });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) return;
+  releaseCombatInput();
+  keys.clear();
+  touchControls.reset();
+  combat.setAim(false);
 });
 document.addEventListener('mousemove', (event) => {
   if (document.pointerLockElement === renderer.domElement) onLook(event.movementX, event.movementY);
@@ -1654,8 +1821,18 @@ function frame(now) {
   }
   const weather = currentWeather();
   const controls = touchControls.input.snapshot();
+  const qaRunning = Boolean(combatQa && now < qaRunUntil && !roomState.room);
+  if (qaFireUntil && now >= qaFireUntil) { qaFireUntil = 0; triggerHeld = false; }
   const previousX = player.x;
   const previousZ = player.z;
+  let movedOnFoot = 0;
+  let movementState = locomotion.readState();
+  const walkingActive = playerControlsActive && !driving.active && !drone.active
+    && cliffFall.phase === 'grounded' && respawnFadeTime < 0 && !combat.equipmentWheelOpen;
+  if (!walkingActive) {
+    movementState = locomotion.step(dt, { active: false });
+    triggerHeld = false;
+  }
 
   if (active && cliffFall.phase !== 'grounded') {
     if (player.stance !== 'stand') {
@@ -1673,6 +1850,8 @@ function frame(now) {
       respawnFadeTime = 0;
       keys.clear();
       touchControls.reset();
+      releaseCombatInput();
+      locomotion.reset({ refill: true });
       showToast('RETURNED TO SAFE GROUND');
       if (roomState.connected) {
         const recovered = { x: player.x, z: player.z,
@@ -1707,22 +1886,27 @@ function frame(now) {
         descend: Number(keys.has('ControlLeft') || keys.has('ControlRight')) + controls.descend,
         boost: keys.has('ShiftLeft') || keys.has('ShiftRight') || controls.boost,
       });
-    } else {
-      const forward = clamp(Number(keys.has('KeyW')) - Number(keys.has('KeyS')) + controls.forward, -1, 1);
+    } else if (walkingActive) {
+      const forward = clamp(Number(keys.has('KeyW')) - Number(keys.has('KeyS')) + controls.forward + Number(qaRunning), -1, 1);
       const side = clamp(Number(keys.has('KeyD')) - Number(keys.has('KeyA')) + controls.sideways, -1, 1);
-      const magnitude = Math.hypot(forward, side);
-      if (magnitude > 0) {
-        const stance = playerStance(player.stance);
-        const speed = keys.has('ShiftLeft') || keys.has('ShiftRight') || controls.sprint
-          ? stance.runSpeed : stance.walkSpeed;
-        const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
-        const rx = Math.cos(player.yaw), rz = -Math.sin(player.yaw);
-        const vx = (fx * forward + rx * side) / magnitude;
-        const vz = (fz * forward + rz * side) / magnitude;
-        tryPlayerStep(player.x + vx * speed * dt, player.z);
-        if (cliffFall.phase === 'grounded') tryPlayerStep(player.x, player.z + vz * speed * dt);
-        player.walkPhase += dt * (speed > 5 ? 11 : 8);
-      }
+      const reloadTime = localAmmo?.[combat.selectedWeapon]?.reloadingUntil || 0;
+      movementState = locomotion.step(dt, {
+        active: walkingActive, forward, side, yaw: player.yaw, stance: player.stance,
+        sprint: keys.has('ShiftLeft') || keys.has('ShiftRight') || controls.sprint || qaRunning,
+        aiming: combat.aiming, reloading: reloadTime > (roomState.room ? roomServerNow() : now),
+        firing: triggerHeld || now < nextLocalShotAt,
+        weaponMultiplier: combat.selectedEquipment === 'unarmed' ? 1
+          : WEAPONS[combat.selectedWeapon]?.movementMultiplier ?? 1,
+        groundHeight: structures.playerGroundHeight, x: player.x, z: player.z,
+      }, (dx, dz) => {
+        const fromX = player.x, fromZ = player.z;
+        tryPlayerStep(player.x + dx, player.z);
+        if (cliffFall.phase === 'grounded') tryPlayerStep(player.x, player.z + dz);
+        return { dx: player.x - fromX, dz: player.z - fromZ };
+      });
+      movedOnFoot = Math.hypot(player.x - previousX, player.z - previousZ);
+      if (movedOnFoot) player.walkPhase += movedOnFoot
+        * (player.stance === 'stand' ? 2.9 : player.stance === 'crouch' ? 3.5 : 4);
     }
   }
   if (roomState.room) {
@@ -1746,9 +1930,11 @@ function frame(now) {
   }
 
   const sheltered = !cinematicCapture?.active && !drone.active && isRoofed(player.x, player.z);
-  footstepDistance += driving.active || drone.active ? 0 : Math.hypot(player.x - previousX, player.z - previousZ);
-  if (footstepDistance > 2.25) {
-    footstepDistance -= 2.25;
+  footstepDistance += movedOnFoot;
+  const stride = player.stance === 'prone' ? 0.8 : player.stance === 'crouch' ? 1.2
+    : movementState.sprinting ? 2.1 : 1.65;
+  if (footstepDistance >= stride && cliffFall.phase === 'grounded') {
+    footstepDistance %= stride;
     sound.playFootstep(sheltered || structures.onSouthPier(player.x, player.z) ? 'floor' : 'wet ground');
   }
   if (cinematicCapture?.active) {
@@ -1770,14 +1956,29 @@ function frame(now) {
     const desiredEyeHeight = playerStance(player.stance).eyeHeight;
     cameraEyeHeight += (desiredEyeHeight - cameraEyeHeight)
       * Math.min(1, dt * 10);
-    const walking = inputDt > 0 && Math.hypot(player.x - previousX, player.z - previousZ) > 0.001;
+    const walking = movedOnFoot > 0.001;
     const bob = walking ? Math.sin(player.walkPhase) * (player.stance === 'stand'
-      ? 0.035 : player.stance === 'crouch' ? 0.018 : 0.008) : 0;
+      ? 0.025 + movementState.sprintFactor * 0.013 : player.stance === 'crouch' ? 0.014 : 0.006)
+      * (combat.aiming ? 0.25 : 1) : 0;
     camera.position.set(player.x,
       structures.playerGroundHeight(player.x, player.z) + cameraEyeHeight + bob,
       player.z);
     orientFirstPersonCamera(camera, player.yaw, player.pitch);
   }
+  if (!cinematicCapture?.active) {
+    const desiredFov = 72 + (walkingActive ? movementState.sprintFactor * 3 : 0)
+      - (walkingActive && combat.aiming ? 8 : 0);
+    const nextFov = camera.fov + (desiredFov - camera.fov) * (1 - Math.exp(-dt * 8));
+    if (Math.abs(nextFov - camera.fov) > 0.001) {
+      camera.fov = nextFov;
+      camera.updateProjectionMatrix();
+    }
+  }
+  $('stamina-hud').hidden = !walkingActive || (movementState.stamina >= 99.5 && !movementState.sprinting);
+  $('stamina-fill').style.width = `${movementState.stamina}%`;
+  $('stamina-hud').classList.toggle('exhausted', movementState.exhausted);
+  $('stamina-label').textContent = movementState.exhausted ? 'RECOVERING' : 'STAMINA';
+  $('stamina-meter').setAttribute('aria-valuenow', String(Math.round(movementState.stamina)));
 
   if (roomState.room && started) {
     const pose = drone.active ? drone.pose() : null;
@@ -1803,7 +2004,18 @@ function frame(now) {
     lastCombatVisible = combatVisible;
     lastCombatHolstered = combatHolstered;
   }
-  combat.update(dt, { moving: Math.hypot(player.x - previousX, player.z - previousZ) > 0.01 });
+  if (triggerHeld && roomCombatReady() && WEAPONS[combat.selectedEquipment]?.automatic) void fireWeapon();
+  combat.update(dt, { moving: movedOnFoot > 0.001, speed: movementState.speed,
+    sprintFactor: movementState.sprintFactor,
+    wind: { x: Math.sin(climate.windDirection) * climate.windSpeed,
+      z: Math.cos(climate.windDirection) * climate.windSpeed } });
+  if (combatQa) {
+    $('combat-qa-state').textContent = JSON.stringify({ weapon: combat.selectedEquipment,
+      ammo: localAmmo[combat.selectedWeapon], ...movementState,
+      smoke: combat.activeSmokeCount, reload: combat.reloadProgress,
+      pending: ammoPrediction.pendingCount, x: player.x, z: player.z });
+    combatQa.dataset.audio = JSON.stringify(combat.audioState);
+  }
 
   if (cliffFall.phase !== 'grounded') {
     fallPresentation.update(dt, { phase: cliffFall.phase === 'impact' ? 'impact' : 'falling',

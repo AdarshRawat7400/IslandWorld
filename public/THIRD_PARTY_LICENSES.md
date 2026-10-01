@@ -568,3 +568,7 @@ Room voice uses livekit-client 2.22.3 and livekit-server-sdk 2.19.1 by LiveKit, 
       defend, and hold each Contributor harmless for any liability
       incurred by, or claims asserted against, such Contributor by reason
       of your accepting any such warranty or additional liability.
+
+## Recorded firearm and reload audio (CC0)
+
+The Free Firearm Sound Library by Ben Jaszczak, Brian Nelson, Kevin Heras, and Matthew Nanney; Gun reload sounds by SpringySpringo. Source declarations, excerpt hashes, and conversion details: assets/combat-audio/SOURCES.md. Full CC0 1.0 license: assets/combat-audio/CC0-1.0.txt. The shipped excerpts may be redistributed commercially.

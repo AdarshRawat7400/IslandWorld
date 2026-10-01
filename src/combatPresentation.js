@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MAX_HEALTH, WEAPONS } from './multiplayerRules.js';
+import { createGunAudio } from './gunAudio.js';
 import { MAX_ARMOR, MAX_GRENADES, MAX_MINES } from './combatLoot.js';
 import { createExplosiveMesh, createExplosivePresentation } from './explosivePresentation.js';
 
@@ -12,10 +13,11 @@ const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(
 const isWeapon = (value) => Object.hasOwn(WEAPONS, value);
 const VIEWMODEL_RENDER_ORDER = 10000;
 const MAX_TRACERS = 24;
-const TRACER_SPEED = Object.freeze({ revolver: 180, rifle: 260, shotgun: 190 });
+const TRACER_SPEED = Object.freeze({ revolver: 180, rifle: 260, shotgun: 190, smg: 240, lmg: 290 });
+const MAX_MUZZLE_SMOKE = 36;
+const EQUIPMENT_SLOT_COUNT = 6; // Three gun slots, two explosives, holster.
 const TRACER_STREAK_METERS = 6;
-const GUNSHOT_MASTER_GAIN = 0.3;
-export const EQUIPMENT_IDS = Object.freeze(['revolver', 'rifle', 'shotgun',
+export const EQUIPMENT_IDS = Object.freeze(['revolver', 'rifle', 'shotgun', 'smg', 'lmg',
   'grenade', 'mine', 'unarmed']);
 const REVOLVER_SOURCE_MUZZLE = Object.freeze([0.302, 0.094, 0]);
 
@@ -174,7 +176,29 @@ function makeProceduralTextures() {
     return [184 + pore + blush, 139 + pore * 0.65 + blush * 0.4,
       106 + pore * 0.5];
   });
-  return { walnut, steel, sleeve, skin };
+  const coastSteel = makeColorTexture(256, (x, y, size) => {
+    const edge = Math.min(x, y, size - 1 - x, size - 1 - y);
+    const wear = Math.max(0, 1 - edge / 9) * (15 + textureNoise(x, y, 7) * 14);
+    const grain = (textureNoise(x, y, 8) - 0.5) * 12;
+    const brushed = Math.sin(y * 2.7) * 1.8;
+    const scratch = y % 31 === 4 && x > 18 && x < 196 ? 13 : 0;
+    return [75 + grain + wear + brushed + scratch,
+      84 + grain + wear + brushed + scratch, 87 + grain + wear + brushed + scratch];
+  });
+  const coastRoughness = makeColorTexture(128, (x, y, size) => {
+    const edge = Math.min(x, y, size - 1 - x, size - 1 - y);
+    const value = 175 + textureNoise(x, y, 11) * 27
+      - Math.max(0, 1 - edge / 8) * 75;
+    return [value, value, value];
+  });
+  coastRoughness.colorSpace = THREE.NoColorSpace;
+  const coastNormal = makeColorTexture(128, (x, y) => {
+    const dx = textureNoise(x + 1, y, 8) - textureNoise(x - 1, y, 8);
+    const dy = textureNoise(x, y + 1, 8) - textureNoise(x, y - 1, 8);
+    return [128 + dx * 34, 128 + dy * 34, 253];
+  });
+  coastNormal.colorSpace = THREE.NoColorSpace;
+  return { walnut, steel, sleeve, skin, coastSteel, coastRoughness, coastNormal };
 }
 
 function makeMaterials(textures) {
@@ -200,7 +224,19 @@ function makeMaterials(textures) {
     nail: standard(0xd8bea8, 0.58, 0),
     sleeve: standard(0xffffff, 0.94, 0, textures.sleeve, 0.005),
     cuff: standard(0xb4babb, 0.91, 0, textures.sleeve, 0.004),
+    coastSteel: standard(0xffffff, 0.78, 0.68, textures.coastSteel),
+    coastDark: standard(0xaeb7b9, 0.87, 0.62, textures.coastSteel),
+    coastWear: standard(0xe9e8d9, 0.49, 0.79, textures.coastSteel),
   };
+  for (const name of ['coastSteel', 'coastDark', 'coastWear']) {
+    materials[name].roughnessMap = textures.coastRoughness;
+    materials[name].normalMap = textures.coastNormal;
+    materials[name].normalScale.set(0.22, 0.22);
+    // The low fill preserves overcast visibility without washing out the
+    // worn surface map or the small specular highlights on bevels.
+    materials[name].emissive.setHex(0x1a252a);
+    materials[name].emissiveIntensity = 0.07;
+  }
   // The island often sits under storm cloud and the camera-mounted model does
   // not receive much sky reflection. A restrained emissive fill keeps the
   // steel form and procedural wear legible without making it glow.
@@ -217,6 +253,44 @@ function makeMaterials(textures) {
 
 function addBox(group, material, size, position, rotation = [0, 0, 0]) {
   const part = new THREE.Mesh(new THREE.BoxGeometry(...size), material);
+  part.position.set(...position);
+  part.rotation.set(...rotation);
+  group.add(part);
+  return part;
+}
+
+function addBeveledBox(group, material, size, position, bevel = 0.004,
+  rotation = [0, 0, 0]) {
+  const edge = Math.min(bevel, ...size.map((value) => value * 0.22));
+  const shape = new THREE.Shape();
+  const x = size[0] / 2 - edge;
+  const y = size[1] / 2 - edge;
+  shape.moveTo(-x, -y);
+  shape.lineTo(x, -y);
+  shape.lineTo(x, y);
+  shape.lineTo(-x, y);
+  shape.closePath();
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth: size[2] - edge * 2, steps: 1, bevelEnabled: true,
+    bevelThickness: edge, bevelSize: edge, bevelSegments: 1,
+    curveSegments: 1,
+  });
+  geometry.translate(0, 0, -size[2] / 2 + edge);
+  const vertices = geometry.attributes.position;
+  const normals = geometry.attributes.normal;
+  const uv = geometry.attributes.uv;
+  for (let i = 0; i < vertices.count; i += 1) {
+    const nx = Math.abs(normals.getX(i));
+    const ny = Math.abs(normals.getY(i));
+    const nz = Math.abs(normals.getZ(i));
+    if (nz > nx && nz > ny) uv.setXY(i, vertices.getX(i) / size[0] + 0.5,
+      vertices.getY(i) / size[1] + 0.5);
+    else if (nx > ny) uv.setXY(i, vertices.getZ(i) / size[2] + 0.5,
+      vertices.getY(i) / size[1] + 0.5);
+    else uv.setXY(i, vertices.getX(i) / size[0] + 0.5,
+      vertices.getZ(i) / size[2] + 0.5);
+  }
+  const part = new THREE.Mesh(geometry, material);
   part.position.set(...position);
   part.rotation.set(...rotation);
   group.add(part);
@@ -280,65 +354,77 @@ function addFinger(group, material, from, bend, tip, radius = 0.016) {
 }
 
 function addRevolverHands(group, material) {
+  const trigger = new THREE.Group();
+  trigger.name = "Trigger hand";
+  const support = new THREE.Group();
+  support.name = "Reload support hand";
+  group.add(trigger, support);
   // Right hand encloses the walnut grip; the left braces its knuckles below
   // the trigger guard. Sleeves connect both hands to the bottom of the frame.
-  addSegment(group, material.sleeve, [0.20, -0.44, 0.15],
+  addSegment(trigger, material.sleeve, [0.20, -0.44, 0.15],
     [0.089, -0.225, -0.013], 0.088, 0.063);
-  addSegment(group, material.cuff, [0.103, -0.242, -0.003],
+  addSegment(trigger, material.cuff, [0.103, -0.242, -0.003],
     [0.077, -0.197, -0.034], 0.065, 0.059);
-  addPalm(group, material.skin, [0.063, -0.137, -0.057],
+  addPalm(trigger, material.skin, [0.063, -0.137, -0.057],
     [0.048, 0.077, 0.041], true);
   for (let i = 0; i < 4; i += 1) {
     const y = -0.073 - i * 0.036;
-    addFinger(group, material, [0.059, y, -0.094],
+    addFinger(trigger, material, [0.059, y, -0.094],
       [0.005, y - 0.012, -0.126], [-0.021, y - 0.020, -0.103], 0.017);
   }
-  addSegment(group, material.skin, [0.024, -0.070, -0.010],
+  addSegment(trigger, material.skin, [0.024, -0.070, -0.010],
     [-0.025, -0.104, -0.046], 0.023, 0.015);
 
-  addSegment(group, material.sleeve, [-0.225, -0.42, 0.115],
+  addSegment(support, material.sleeve, [-0.225, -0.42, 0.115],
     [-0.087, -0.221, -0.064], 0.084, 0.061);
-  addSegment(group, material.cuff, [-0.098, -0.241, -0.054],
+  addSegment(support, material.cuff, [-0.098, -0.241, -0.054],
     [-0.074, -0.194, -0.073], 0.064, 0.058);
-  addPalm(group, material.skin, [-0.067, -0.155, -0.098],
+  addPalm(support, material.skin, [-0.067, -0.155, -0.098],
     [0.043, 0.065, 0.039], true);
   for (let i = 0; i < 4; i += 1) {
     const y = -0.094 - i * 0.032;
-    addFinger(group, material, [-0.084, y, -0.116],
+    addFinger(support, material, [-0.084, y, -0.116],
       [-0.047, y - 0.007, -0.139], [-0.005, y - 0.012, -0.139], 0.015);
   }
-  addSegment(group, material.skin, [-0.082, -0.083, -0.058],
+  addSegment(support, material.skin, [-0.082, -0.083, -0.058],
     [-0.024, -0.112, -0.034], 0.021, 0.013);
+  return { trigger, support };
 }
 
 function addRifleHands(group, material) {
+  const trigger = new THREE.Group();
+  trigger.name = "Trigger hand";
+  const support = new THREE.Group();
+  support.name = "Reload support hand";
+  group.add(trigger, support);
   // The right trigger hand cups the stock; the left supports the fore-end.
-  addSegment(group, material.sleeve, [0.23, -0.43, 0.35],
+  addSegment(trigger, material.sleeve, [0.23, -0.43, 0.35],
     [0.094, -0.22, 0.115], 0.088, 0.061);
-  addSegment(group, material.cuff, [0.104, -0.241, 0.134],
+  addSegment(trigger, material.cuff, [0.104, -0.241, 0.134],
     [0.082, -0.195, 0.088], 0.066, 0.059);
-  addPalm(group, material.skin, [0.065, -0.130, 0.094],
+  addPalm(trigger, material.skin, [0.065, -0.130, 0.094],
     [0.049, 0.074, 0.047], true);
   for (let i = 0; i < 4; i += 1) {
     const z = 0.017 + i * 0.038;
-    addFinger(group, material, [0.071, -0.105, z],
+    addFinger(trigger, material, [0.071, -0.105, z],
       [0.041, -0.135, z - 0.006], [0.007, -0.151, z - 0.009], 0.016);
   }
-  addSegment(group, material.skin, [0.025, -0.063, 0.076],
+  addSegment(trigger, material.skin, [0.025, -0.063, 0.076],
     [-0.032, -0.079, 0.020], 0.022, 0.014);
 
-  addSegment(group, material.sleeve, [-0.25, -0.40, -0.24],
+  addSegment(support, material.sleeve, [-0.25, -0.40, -0.24],
     [-0.092, -0.205, -0.432], 0.085, 0.061);
-  addSegment(group, material.cuff, [-0.108, -0.230, -0.414],
+  addSegment(support, material.cuff, [-0.108, -0.230, -0.414],
     [-0.077, -0.185, -0.455], 0.065, 0.059);
-  addPalm(group, material.skin, [-0.046, -0.140, -0.468], [0.057, 0.045, 0.083]);
+  addPalm(support, material.skin, [-0.046, -0.140, -0.468], [0.057, 0.045, 0.083]);
   for (let i = 0; i < 4; i += 1) {
     const z = -0.386 - i * 0.049;
-    addFinger(group, material, [-0.068, -0.144, z],
+    addFinger(support, material, [-0.068, -0.144, z],
       [-0.016, -0.144, z - 0.009], [0.038, -0.150, z - 0.006], 0.017);
   }
-  addSegment(group, material.skin, [-0.043, -0.101, -0.393],
+  addSegment(support, material.skin, [-0.043, -0.101, -0.393],
     [0.025, -0.064, -0.373], 0.023, 0.014);
+  return { trigger, support };
 }
 
 function createRevolver(material) {
@@ -354,11 +440,14 @@ function createRevolver(material) {
     [0, 0.086, -0.676], [Math.PI / 2, 0, 0], 14);
   addCylinder(gun, material.hole, 0.013, 0.013, 0.008,
     [0, 0.086, -0.681], [Math.PI / 2, 0, 0], 14);
-  addCylinder(gun, material.polished, 0.075, 0.075, 0.124,
+  const cylinder = new THREE.Group();
+  cylinder.name = 'Swing-out cylinder';
+  gun.add(cylinder);
+  addCylinder(cylinder, material.polished, 0.075, 0.075, 0.124,
     [0, 0.044, -0.27], [Math.PI / 2, 0, 0], 12);
   for (let i = 0; i < 6; i += 1) {
     const angle = i * Math.PI / 3;
-    addCylinder(gun, material.hole, 0.014, 0.014, 0.003,
+    addCylinder(cylinder, material.hole, 0.014, 0.014, 0.003,
       [Math.cos(angle) * 0.046, 0.044 + Math.sin(angle) * 0.046, -0.335],
       [Math.PI / 2, 0, 0], 8);
   }
@@ -373,9 +462,9 @@ function createRevolver(material) {
     [0.046, -0.16, -0.07]);
   const hands = new THREE.Group();
   hands.name = 'Procedural hands fallback';
-  addRevolverHands(hands, material);
+  const handRig = addRevolverHands(hands, material);
   group.add(hands);
-  return { group, gun, hands, muzzle: new THREE.Vector3(0, 0.086, -0.695) };
+  return { group, gun, hands, ...handRig, rig: { cylinder }, muzzle: new THREE.Vector3(0, 0.086, -0.695) };
 }
 
 function createRifle(material) {
@@ -394,7 +483,7 @@ function createRifle(material) {
   addCylinder(gun, material.hole, 0.017, 0.017, 0.006,
     [0, 0.072, -1.183], [Math.PI / 2, 0, 0], 14);
   addBox(gun, material.blued, [0.11, 0.025, 0.17], [0, -0.008, -0.31]);
-  addBox(gun, material.polished, [0.035, 0.018, 0.045],
+  const bolt = addBox(gun, material.polished, [0.035, 0.018, 0.045],
     [0.055, 0.062, -0.08], [0, 0, -0.3]);
   addBox(gun, material.darkSteel, [0.014, 0.045, 0.018], [0, 0.112, -1.06]);
   addBox(gun, material.darkSteel, [0.014, 0.038, 0.018], [0, 0.111, -0.08]);
@@ -403,9 +492,9 @@ function createRifle(material) {
     [0, -0.178, 0.155], [-0.26, 0, 0]);
   const hands = new THREE.Group();
   hands.name = 'Procedural hands fallback';
-  addRifleHands(hands, material);
+  const handRig = addRifleHands(hands, material);
   group.add(hands);
-  return { group, gun, hands, muzzle: new THREE.Vector3(0, 0.072, -1.195) };
+  return { group, gun, hands, ...handRig, rig: { bolt }, muzzle: new THREE.Vector3(0, 0.072, -1.195) };
 }
 
 function createShotgun(material) {
@@ -419,7 +508,7 @@ function createShotgun(material) {
     [0, 0.032, -0.195]);
   addBox(group, material.walnutEdge, [0.13, 0.092, 0.32],
     [0, -0.095, -0.47]);
-  addBox(group, material.walnut, [0.14, 0.075, 0.29],
+  const pump = addBox(group, material.walnut, [0.14, 0.075, 0.29],
     [0, -0.094, -0.475]);
   for (const x of [-0.028, 0.028]) {
     addCylinder(group, material.blued, 0.029, 0.031, 0.72,
@@ -445,9 +534,241 @@ function createShotgun(material) {
   }
   const hands = new THREE.Group();
   hands.name = 'Procedural hands fallback';
-  addRifleHands(hands, material);
+  const handRig = addRifleHands(hands, material);
   group.add(hands);
-  return { group, hands, muzzle: new THREE.Vector3(0, 0.071, -1.09) };
+  return { group, hands, ...handRig, rig: { pump }, muzzle: new THREE.Vector3(0, 0.071, -1.09) };
+}
+
+function createAutomaticGun(material, heavy) {
+  // Original compact coastguard SMG / wooden-stock support gun. Every part is
+  // authored here, including the detachable magazine and charging handle.
+  material = { ...material, blued: material.coastSteel,
+    darkSteel: material.coastDark, polished: material.coastWear };
+  const group = new THREE.Group();
+  const gun = new THREE.Group();
+  gun.name = heavy ? 'Original island support machine gun' : 'Original coastguard patrol SMG';
+  group.add(gun);
+  const barrelEnd = heavy ? -1.12 : -0.79;
+  const receiver = addBeveledBox(gun, material.darkSteel, [0.12, 0.13, 0.43],
+    [0, 0.015, -0.23], 0.006);
+  receiver.name = 'Worn beveled receiver';
+  addBeveledBox(gun, material.blued, [0.10, 0.036, 0.44], [0, 0.097, -0.23]);
+  addBeveledBox(gun, material.walnut, [0.095, 0.17, 0.43], [0, -0.07, 0.22], 0.009);
+  addBox(gun, material.walnutEdge, [0.103, 0.18, 0.037], [0, -0.07, 0.446]);
+  addBeveledBox(gun, material.walnut, [0.077, 0.19, 0.085], [0, -0.17, -0.015],
+    0.008, [-0.23, 0, 0]);
+  // A rounded open trigger guard, separate trigger and machined side plate
+  // make the first-person silhouette less like stacked rectangular blocks.
+  const guardCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, -0.063, -0.035), new THREE.Vector3(0, -0.135, -0.048),
+    new THREE.Vector3(0, -0.144, -0.116), new THREE.Vector3(0, -0.114, -0.159),
+    new THREE.Vector3(0, -0.060, -0.162),
+  ]);
+  const guard = new THREE.Mesh(new THREE.TubeGeometry(guardCurve, 14, 0.008, 6, false),
+    material.blued);
+  guard.name = 'Rounded trigger guard';
+  gun.add(guard);
+  addBox(gun, material.polished, [0.012, 0.041, 0.015], [0, -0.085, -0.091], [-0.31, 0, 0]);
+  const plate = addBeveledBox(gun, material.blued, [0.006, 0.075, 0.29],
+    [-0.063, 0.021, -0.219], 0.0018);
+  plate.name = 'Machined receiver side plate';
+  for (const z of [-0.105, -0.328]) for (const y of [-0.002, 0.043]) {
+    addCylinder(gun, material.polished, 0.0068, 0.0068, 0.0036,
+      [-0.068, y, z], [0, 0, Math.PI / 2], 10);
+    addBox(gun, material.hole, [0.001, 0.002, 0.009], [-0.071, y, z]);
+  }
+  // Two shallow grooves read as stamped receiver seams without extra faces.
+  for (const y of [0.008, 0.027]) addBox(gun, material.hole, [0.0015, 0.002, 0.075],
+    [-0.067, y, -0.23]);
+  addCylinder(gun, material.polished, 0.011, 0.011, 0.004,
+    [-0.07, -0.009, -0.065], [0, 0, Math.PI / 2], 12);
+  addBox(gun, material.blued, [0.006, 0.027, 0.01], [-0.073, -0.013, -0.065],
+    [-0.56, 0, 0]);
+  for (let i = 0; i < 5; i += 1) addBeveledBox(gun, material.blued,
+    [0.10, 0.012, 0.023], [0, 0.119, -0.15 - i * 0.045], 0.002);
+  addBox(gun, material.hole, [0.004, 0.04, 0.12], [0.063, 0.042, -0.21]);
+  addBox(gun, material.polished, [0.005, 0.017, 0.083], [0.066, 0.023, -0.19]);
+  const bolt = addBeveledBox(gun, material.polished, [0.065, 0.015, 0.027],
+    [0.069, 0.073, -0.09], 0.003);
+  const shroudLength = heavy ? 0.38 : 0.29;
+  addCylinder(gun, material.darkSteel, heavy ? 0.053 : 0.042, heavy ? 0.053 : 0.042,
+    shroudLength, [0, 0.071, -0.54], [Math.PI / 2, 0, 0], 16);
+  for (let i = 0; i < (heavy ? 7 : 5); i += 1) {
+    for (const x of [-1, 1]) addBox(gun, material.hole, [0.004, 0.022, 0.017],
+      [x * (heavy ? 0.054 : 0.043), 0.071, -0.405 - i * 0.043]);
+  }
+  addCylinder(gun, material.blued, heavy ? 0.026 : 0.023, heavy ? 0.028 : 0.025,
+    Math.abs(barrelEnd + 0.42), [0, 0.071, (barrelEnd - 0.42) / 2], [Math.PI / 2, 0, 0], 14);
+  addCylinder(gun, material.polished, 0.034, 0.034, 0.045,
+    [0, 0.071, barrelEnd + 0.015], [Math.PI / 2, 0, 0], 16);
+  addCylinder(gun, material.hole, 0.014, 0.014, 0.007,
+    [0, 0.071, barrelEnd - 0.013], [Math.PI / 2, 0, 0], 12);
+  addBox(gun, material.blued, [0.014, 0.047, 0.013], [0, 0.122, barrelEnd + 0.065]);
+  addBox(gun, material.blued, [0.050, 0.029, 0.014], [0, 0.129, -0.07]);
+  const magazine = new THREE.Group();
+  magazine.name = heavy ? 'Detachable support box magazine' : 'Detachable patrol magazine';
+  magazine.position.set(0, -0.165, -0.27);
+  gun.add(magazine);
+  if (heavy) {
+    addBeveledBox(magazine, material.darkSteel, [0.17, 0.20, 0.145], [0, -0.064, 0], 0.009);
+    addBox(magazine, material.polished, [0.174, 0.022, 0.15], [0, -0.168, 0]);
+    for (let i = 0; i < 4; i += 1) addBox(magazine, material.blued,
+      [0.179, 0.008, 0.139], [0, -0.02 - i * 0.038, 0]);
+    for (const x of [-1, 1]) {
+      addSegment(gun, material.darkSteel, [x * 0.037, 0.021, -0.77],
+        [x * 0.042, -0.1, -0.86], 0.014, 0.012);
+      addBox(gun, material.darkSteel, [0.047, 0.018, 0.085], [x * 0.042, -0.108, -0.875]);
+    }
+  } else {
+    addBeveledBox(magazine, material.blued, [0.068, 0.285, 0.087], [0, -0.094, 0],
+      0.005, [-0.08, 0, 0]);
+    addBox(magazine, material.polished, [0.074, 0.015, 0.095], [0, -0.242, 0.011]);
+    for (const x of [-1, 1]) addBox(magazine, material.darkSteel,
+      [0.002, 0.20, 0.034], [x * 0.035, -0.107, 0]);
+  }
+  const hands = new THREE.Group();
+  const handRig = addRifleHands(hands, material);
+  group.add(hands);
+  return { group, gun, hands, ...handRig, rig: { magazine, bolt },
+    muzzle: new THREE.Vector3(0, 0.071, barrelEnd - 0.024) };
+}
+
+const smooth = (x) => { const t = clamp(x, 0, 1); return t * t * (3 - 2 * t); };
+const phaseWindow = (p, start, end, fade = 0.12) =>
+  smooth((p - start) / fade) * (1 - smooth((p - end + fade) / fade));
+
+export function sampleReloadAnimation(weapon, remainingMs) {
+  const duration = WEAPONS[weapon]?.reloadMs;
+  if (!duration || !Number.isFinite(remainingMs)) return null;
+  const progress = clamp(1 - remainingMs / duration, 0, 1);
+  const lift = Math.sin(Math.PI * progress);
+  const opening = phaseWindow(progress, 0.07, 0.93, 0.15);
+  const magazine = phaseWindow(progress, 0.18, 0.78, 0.19);
+  const feed = phaseWindow(progress, 0.25, 0.83, 0.08);
+  const charging = phaseWindow(progress, 0.80, 0.98, 0.08);
+  return { progress, lift, opening, magazine, feed, charging,
+    loadingStroke: feed * (0.5 + 0.5 * Math.sin(progress * Math.PI * 10)) };
+}
+
+function initializeReloadRig(model) {
+  const nodes = [model.support, ...Object.values(model.rig ?? {}).flat()].filter(Boolean);
+  for (const node of nodes) if (!node.userData.reloadRest) {
+    node.userData.reloadRest = { position: node.position.clone(), quaternion: node.quaternion.clone() };
+  }
+}
+
+function resetReloadRig(model) {
+  model.group.position.set(0, 0, 0);
+  model.group.rotation.set(0, 0, 0);
+  if (model.reloadRound) model.reloadRound.visible = false;
+  const nodes = [model.support, ...Object.values(model.rig ?? {}).flat()].filter(Boolean);
+  for (const node of nodes) {
+    const rest = node.userData.reloadRest;
+    if (rest) { node.position.copy(rest.position); node.quaternion.copy(rest.quaternion); }
+  }
+}
+
+function applyReloadRig(model, weapon, pose) {
+  resetReloadRig(model);
+  if (!pose) return;
+  const { lift, opening, magazine, feed, charging, loadingStroke } = pose;
+  model.group.position.y = -0.055 * lift;
+  model.group.rotation.z = (weapon === 'revolver' ? -0.23 : -0.17) * lift;
+  model.group.rotation.x = 0.07 * lift;
+  if (model.support) {
+    model.support.position.x -= (weapon === 'revolver' ? 0.015 : 0.055) * lift;
+    model.support.position.y += weapon === 'smg' || weapon === 'lmg' ? -0.20 * magazine : 0.075 * feed;
+    model.support.position.z += (weapon === 'revolver' ? -0.16 : 0.18) * opening;
+    model.support.rotation.x += (weapon === 'smg' || weapon === 'lmg' ? -0.35 : 0.15) * lift;
+    if (weapon === 'shotgun' || weapon === 'rifle') model.support.position.z += 0.04 * loadingStroke;
+  }
+  if (model.rig.magazine) {
+    model.rig.magazine.position.y -= 0.32 * magazine;
+    model.rig.magazine.position.z += 0.07 * magazine;
+    model.rig.magazine.rotation.x += 0.18 * magazine;
+  }
+  if (model.rig.cylinder) {
+    model.rig.cylinder.position.x -= 0.14 * opening;
+    model.rig.cylinder.rotation.z += 1.2 * feed;
+  }
+  if (model.rig.sourceHinge) model.rig.sourceHinge.rotateX(-0.95 * opening);
+  if (model.rig.sourceCylinder) model.rig.sourceCylinder.rotateY(1.2 * feed);
+  if (model.rig.bolt) {
+    model.rig.bolt.position.z += 0.115 * (weapon === 'rifle' ? opening : charging);
+    model.rig.bolt.rotation.z += 0.55 * opening;
+  }
+  for (const bolt of model.rig.sourceBolts ?? []) {
+    bolt.position.x -= 0.08 * opening;
+    bolt.rotation.x += 0.4 * opening;
+  }
+  if (model.rig.pump) model.rig.pump.position.z += 0.1 * charging;
+  if (model.reloadRound) {
+    model.reloadRound.visible = feed > 0.05;
+    model.reloadRound.position.set(weapon === 'revolver' ? -0.14 : 0.075,
+      -0.075 + loadingStroke * 0.085, weapon === 'revolver' ? -0.31 : -0.20);
+    model.reloadRound.rotation.x = Math.PI / 2 + (1 - loadingStroke) * 0.45;
+  }
+}
+
+function createMuzzleSmoke(scene) {
+  const size = 64;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y += 1) for (let x = 0; x < size; x += 1) {
+    const radius = Math.hypot((x - 31.5) / 31.5, (y - 31.5) / 31.5);
+    const offset = (y * size + x) * 4;
+    data[offset] = data[offset + 1] = data[offset + 2] = 218;
+    data[offset + 3] = Math.round(Math.max(0, 1 - radius) ** 2 * 225);
+  }
+  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  texture.needsUpdate = true;
+  texture.minFilter = texture.magFilter = THREE.LinearFilter;
+  const group = new THREE.Group();
+  group.name = 'Bounded world muzzle smoke';
+  scene.add(group);
+  const pool = Array.from({ length: MAX_MUZZLE_SMOKE }, () => {
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture,
+      color: 0xc7cbd0, transparent: true, opacity: 0, depthTest: true,
+      depthWrite: false, toneMapped: false }));
+    sprite.visible = false;
+    group.add(sprite);
+    return { sprite, velocity: new THREE.Vector3(), age: 0, lifetime: 0 };
+  });
+  let cursor = 0;
+  return {
+    emit(origin, direction, weapon, wind) {
+      if (!origin?.isVector3) return;
+      for (let i = 0; i < (weapon === 'lmg' || weapon === 'shotgun' ? 3 : 2); i += 1) {
+        const item = pool[cursor++ % pool.length];
+        item.age = 0;
+        item.lifetime = 0.52 + Math.random() * 0.35;
+        item.sprite.visible = true;
+        item.sprite.position.copy(origin);
+        item.sprite.scale.setScalar(0.06 + i * 0.025);
+        item.sprite.material.opacity = 0.33;
+        item.sprite.material.rotation = Math.random() * Math.PI * 2;
+        item.velocity.copy(direction?.isVector3 ? direction : new THREE.Vector3(0, 0, -1))
+          .multiplyScalar(1.1 + Math.random() * 0.7);
+        item.velocity.y += 0.35;
+        item.velocity.addScaledVector(wind, 0.08);
+      }
+    },
+    update(dt, wind) {
+      for (const item of pool) {
+        if (!item.sprite.visible) continue;
+        item.age += dt;
+        if (item.age >= item.lifetime) { item.sprite.visible = false; continue; }
+        const progress = item.age / item.lifetime;
+        item.velocity.multiplyScalar(Math.exp(-dt * 2.4));
+        item.velocity.addScaledVector(wind, dt * 0.3);
+        item.velocity.y += dt * 0.3;
+        item.sprite.position.addScaledVector(item.velocity, dt);
+        item.sprite.scale.setScalar(0.07 + progress * 0.44);
+        item.sprite.material.opacity = 0.33 * (1 - progress) ** 1.7;
+      }
+    },
+    get activeCount() { return pool.filter((item) => item.sprite.visible).length; },
+    dispose() { scene.remove(group); disposeThreeObject(group); },
+  };
 }
 
 function createHeldEquipment(kind, material) {
@@ -473,6 +794,7 @@ function createHeldEquipment(kind, material) {
 
 function makeFlash({ viewmodel = true } = {}) {
   const group = new THREE.Group();
+  group.name = 'Muzzle flash';
   group.renderOrder = viewmodel ? VIEWMODEL_RENDER_ORDER + 1 : 0;
   const glow = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6),
     new THREE.MeshBasicMaterial({ color: 0xffe9ab, transparent: true,
@@ -513,141 +835,6 @@ export function visualTracerImpactDistance({ weapon, origin, direction, muzzle,
   return clamp(visualOrigin.distanceTo(impact), 1.01, WEAPONS[weapon].range);
 }
 
-function createGunAudio() {
-  let context = null;
-  let master = null;
-  let limiter = null;
-  let noise = null;
-  let muted = false;
-  let volume = 1;
-  const active = new Set();
-
-  function ensureContext() {
-    if (context && context.state !== 'closed') return true;
-    const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
-    if (!AudioContext) return false;
-    try {
-      context = new AudioContext();
-      master = context.createGain();
-      master.gain.value = muted ? 0 : volume * GUNSHOT_MASTER_GAIN;
-      limiter = context.createDynamicsCompressor?.() ?? null;
-      if (limiter) {
-        limiter.threshold.value = -11;
-        limiter.knee.value = 12;
-        limiter.ratio.value = 4;
-        limiter.attack.value = 0.003;
-        limiter.release.value = 0.17;
-        master.connect(limiter).connect(context.destination);
-      } else master.connect(context.destination);
-      const length = Math.round(context.sampleRate * 0.62);
-      noise = context.createBuffer(1, length, context.sampleRate);
-      const channel = noise.getChannelData(0);
-      for (let i = 0; i < length; i += 1) channel[i] = Math.random() * 2 - 1;
-      return true;
-    } catch {
-      context = null;
-      return false;
-    }
-  }
-
-  function play(weapon, { gain = 1, pan = 0 } = {}) {
-    if (muted || gain <= 0 || !ensureContext()) return;
-    void context.resume().catch(() => {});
-    const rifle = weapon === 'rifle';
-    const shotgun = weapon === 'shotgun';
-    const now = context.currentTime;
-    const noiseSource = context.createBufferSource();
-    noiseSource.buffer = noise;
-    const filter = context.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.value = shotgun ? 1300 : rifle ? 1900 : 2900;
-    const envelope = context.createGain();
-    const peak = clamp(gain, 0, 1) * (shotgun ? 0.82 : rifle ? 0.73 : 0.61);
-    const decay = shotgun ? 0.52 : rifle ? 0.42 : 0.26;
-    envelope.gain.setValueAtTime(0.0001, now);
-    envelope.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), now + 0.003);
-    envelope.gain.exponentialRampToValueAtTime(0.0001, now + decay);
-    const stereo = context.createStereoPanner?.();
-    if (stereo) stereo.pan.value = clamp(pan, -1, 1);
-    noiseSource.connect(filter).connect(envelope);
-    envelope.connect(stereo ?? master);
-    stereo?.connect(master);
-    noiseSource.start(now, Math.random() * 0.12, decay + 0.01);
-    noiseSource.stop(now + decay + 0.02);
-    active.add(noiseSource);
-    noiseSource.onended = () => {
-      active.delete(noiseSource);
-      noiseSource.disconnect();
-      filter.disconnect();
-      envelope.disconnect();
-      stereo?.disconnect();
-    };
-
-    // A short filtered crack gives the shot definition over rain and surf;
-    // the compressor and bounded master gain keep stacked reports comfortable.
-    const crack = context.createBufferSource();
-    crack.buffer = noise;
-    const crackFilter = context.createBiquadFilter();
-    crackFilter.type = 'highpass';
-    crackFilter.frequency.value = shotgun ? 740 : rifle ? 1300 : 1650;
-    const crackGain = context.createGain();
-    crackGain.gain.setValueAtTime(0.0001, now);
-    crackGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak * 0.31),
-      now + 0.0015);
-    crackGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.052);
-    crack.connect(crackFilter).connect(crackGain).connect(stereo ?? master);
-    crack.start(now, Math.random() * 0.14, 0.06);
-    crack.stop(now + 0.065);
-    active.add(crack);
-    crack.onended = () => {
-      active.delete(crack);
-      crack.disconnect();
-      crackFilter.disconnect();
-      crackGain.disconnect();
-    };
-
-    const body = context.createOscillator();
-    const bodyGain = context.createGain();
-    body.type = 'triangle';
-    body.frequency.setValueAtTime(shotgun ? 92 : rifle ? 118 : 155, now);
-    body.frequency.exponentialRampToValueAtTime(shotgun ? 31 : rifle ? 39 : 57,
-      now + 0.16);
-    bodyGain.gain.setValueAtTime(Math.max(0.0001, peak * 0.16), now);
-    bodyGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
-    body.connect(bodyGain).connect(stereo ?? master);
-    body.start(now);
-    body.stop(now + 0.19);
-    active.add(body);
-    body.onended = () => {
-      active.delete(body);
-      body.disconnect();
-      bodyGain.disconnect();
-    };
-  }
-
-  return {
-    play,
-    setMuted(value) {
-      muted = Boolean(value);
-      if (master) master.gain.setTargetAtTime(muted ? 0 : volume * GUNSHOT_MASTER_GAIN,
-        context.currentTime, 0.035);
-    },
-    setVolume(value) {
-      volume = clamp(finite(value, 1), 0, 1);
-      if (master) master.gain.setTargetAtTime(muted ? 0 : volume * GUNSHOT_MASTER_GAIN,
-        context.currentTime, 0.035);
-    },
-    async dispose() {
-      for (const source of active) {
-        try { source.stop(); } catch { /* Source already ended. */ }
-      }
-      active.clear();
-      if (context && context.state !== 'closed') await context.close().catch(() => {});
-      context = master = limiter = noise = null;
-    },
-  };
-}
-
 function makeButton(doc, label, title) {
   const button = doc.createElement('button');
   button.type = 'button';
@@ -666,7 +853,7 @@ function makeButton(doc, label, title) {
  * authoritative state; `fire` only animates a shot already requested/accepted.
  */
 export function createCombatPresentation({ camera, scene, root = globalThis.document?.body,
-  onFire = () => {}, onReload = () => {}, onAim = () => {},
+  onFire = () => {}, onTriggerChange = () => {}, onReload = () => {}, onAim = () => {},
   onSelectWeapon = () => {}, onSelectEquipment = null,
   onUseEquipment = () => {}, onRespawn = () => {}, mobile = false } = {}) {
   if (!camera?.add || !scene?.add || !root?.ownerDocument) {
@@ -676,16 +863,29 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
   const textures = makeProceduralTextures();
   const materials = makeMaterials(textures);
   const models = { revolver: createRevolver(materials), rifle: createRifle(materials),
-    shotgun: createShotgun(materials) };
+    shotgun: createShotgun(materials), smg: createAutomaticGun(materials, false),
+    lmg: createAutomaticGun(materials, true) };
   const held = { grenade: createHeldEquipment('grenade', materials),
     mine: createHeldEquipment('mine', materials) };
   const viewRoot = new THREE.Group();
   viewRoot.name = 'First-person equipment viewmodel';
   viewRoot.renderOrder = VIEWMODEL_RENDER_ORDER;
   viewRoot.position.set(0.38, -0.32, -0.63);
+  const baseViewPosition = viewRoot.position.clone();
   for (const [id, model] of Object.entries(models)) {
     model.group.name = id;
     model.group.visible = id === 'revolver';
+    if (['revolver', 'rifle', 'shotgun'].includes(id)) {
+      model.reloadRound = new THREE.Group();
+      model.reloadRound.name = id === 'revolver' ? 'Reload speedloader' : 'Reload cartridge';
+      addCylinder(model.reloadRound, id === 'shotgun' ? materials.shell : materials.brass,
+        id === 'shotgun' ? 0.021 : 0.014, id === 'shotgun' ? 0.021 : 0.014,
+        0.065, [0, 0, 0], [0, 0, 0], 10);
+      addCylinder(model.reloadRound, materials.brass, 0.016, 0.016, 0.008,
+        [0, -0.035, 0], [0, 0, 0], 10);
+      model.reloadRound.visible = false;
+      model.group.add(model.reloadRound);
+    }
     model.group.traverse((part) => {
       if (!part.isMesh) return;
       part.renderOrder = VIEWMODEL_RENDER_ORDER;
@@ -708,6 +908,9 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
   }
   camera.add(viewRoot);
   const sound = createGunAudio();
+  const smoke = createMuzzleSmoke(scene);
+  const smokeWind = new THREE.Vector3();
+  for (const model of Object.values(models)) initializeReloadRig(model);
   const explosives = createExplosivePresentation({ scene, camera });
   const transientFlashes = [];
   const activeTracers = [];
@@ -729,6 +932,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     const maxRange = Number.isFinite(hitDistance)
       ? clamp(hitDistance, 1.01, WEAPONS[weapon].range) : WEAPONS[weapon].range;
     const mesh = new THREE.Group();
+    mesh.name = `Muzzle-origin ${weapon} tracer`;
     // A slim pale core and a softer halo remain visible for several frames.
     // Both are world-space and depth-tested, unlike the camera-attached gun.
     const coreMaterial = new THREE.MeshBasicMaterial({ color: 0xfff6d7,
@@ -873,10 +1077,10 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     color:#f2ddaa;font:600 11px 'DM Sans',sans-serif;letter-spacing:.09em;
     white-space:pre-line;line-height:1.5;`;
   wheelRing.appendChild(wheelCenter);
-  const slotButtons = Array.from({ length: EQUIPMENT_IDS.length }, () => {
+  const slotButtons = Array.from({ length: EQUIPMENT_SLOT_COUNT }, () => {
     const button = makeButton(doc, '', 'Equipment slot');
     const index = wheelRing.children.length - 1;
-    const angle = -Math.PI / 2 + index * Math.PI * 2 / EQUIPMENT_IDS.length;
+    const angle = -Math.PI / 2 + index * Math.PI * 2 / EQUIPMENT_SLOT_COUNT;
     button.style.cssText += `position:absolute;left:${50 + Math.cos(angle) * 34}%;
       top:${50 + Math.sin(angle) * 34}%;transform:translate(-50%,-50%);
       width:clamp(62px,19vw,86px);min-width:0;min-height:58px;
@@ -903,6 +1107,11 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
   let damageAlpha = 0;
   let hitTime = 0;
   let walkPhase = 0;
+  let motionAmount = 0;
+  let sprintAmount = 0;
+  let reloadVisualKey = null;
+  let reloadVisualEnd = 0;
+  let mobileTriggerHeld = false;
   let disposed = false;
   let rifleAssetStatus = 'fallback';
   let revolverAssetStatus = 'fallback';
@@ -919,9 +1128,20 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     if (selectedEquipment === 'grenade' || selectedEquipment === 'mine') {
       const count = selectedEquipment === 'grenade' ? inventory.grenades : inventory.mines;
       if (count > 0) onUseEquipment(selectedEquipment);
-    } else onFire();
+    } else {
+      fireButton.setPointerCapture?.(event.pointerId);
+      mobileTriggerHeld = true;
+      onTriggerChange(true);
+      onFire();
+    }
+  };
+  const releaseTrigger = () => {
+    if (!mobileTriggerHeld) return;
+    mobileTriggerHeld = false;
+    onTriggerChange(false);
   };
   const handleReload = (event) => {
+    releaseTrigger();
     event.preventDefault();
     if (!wheelOpen && isWeapon(selectedEquipment)) onReload();
   };
@@ -946,6 +1166,9 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     onAim(false);
   };
   fireButton.addEventListener('pointerdown', handleFire);
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    fireButton.addEventListener(type, releaseTrigger);
+  }
   reloadButton.addEventListener('click', handleReload);
   wheelButton.addEventListener('click', handleWheelButton);
   respawnButton.addEventListener('click', (event) => {
@@ -1080,6 +1303,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
 
   function openEquipmentWheel() {
     if (disposed || wheelOpen || !state.active || state.dead || state.holstered) return false;
+    releaseTrigger();
     const available = availableEquipment();
     if (!available.length) return false;
     wheelOpen = true;
@@ -1104,7 +1328,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     let closest = null;
     for (const [index, slot] of slots.entries()) {
       if (!slot.id || slot.count <= 0) continue;
-      const slotAngle = -Math.PI / 2 + index * Math.PI * 2 / EQUIPMENT_IDS.length;
+      const slotAngle = -Math.PI / 2 + index * Math.PI * 2 / EQUIPMENT_SLOT_COUNT;
       const delta = Math.atan2(Math.sin(angle - slotAngle),
         Math.cos(angle - slotAngle));
       const distance = Math.abs(delta);
@@ -1180,7 +1404,10 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     if (next.respawnAvailableAt !== undefined) merged.respawnAt = next.respawnAvailableAt;
     state = normalizeCombatHudState(merged);
     if (selectedEquipment === 'unarmed') state.aiming = false;
-    if (!state.active || state.dead || state.holstered) wheelOpen = false;
+    if (!state.active || state.dead || state.holstered) {
+      wheelOpen = false;
+      releaseTrigger();
+    }
     if (state.health > previousHealth) {
       healthFeedback = 'healed';
       healthFeedbackTime = 1.15;
@@ -1188,7 +1415,10 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
       healthFeedback = 'hurt';
       healthFeedbackTime = 1.15;
     }
-    if (newWeapon !== previousWeapon) recoil = 0;
+    if (newWeapon !== previousWeapon || !state.active || state.dead || state.holstered) {
+      recoil = 0;
+      cancelReloadPresentation();
+    }
     renderHud();
   }
 
@@ -1200,6 +1430,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
 
   function selectWeapon(weapon) {
     if (!isWeapon(weapon) || disposed || !inventory.guns.includes(weapon)) return false;
+    if (selectedEquipment !== weapon) { releaseTrigger(); cancelReloadPresentation(); }
     selectedEquipment = weapon;
     setState({ weapon });
     return true;
@@ -1211,6 +1442,8 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     if (id === 'grenade' && inventory.grenades <= 0
       || id === 'mine' && inventory.mines <= 0) return false;
     selectedEquipment = id;
+    releaseTrigger();
+    cancelReloadPresentation();
     state.aiming = false;
     if (id === 'unarmed') {
       recoil = 0;
@@ -1240,7 +1473,9 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     if (local) {
       if (!state.active || state.dead || state.holstered
         || selectedEquipment !== weapon) return;
-      recoil = weapon === 'shotgun' ? 0.34 : weapon === 'rifle' ? 0.24 : 0.15;
+      recoil = Math.min(0.46, recoil + (weapon === 'shotgun' ? 0.34
+        : weapon === 'rifle' ? 0.24 : weapon === 'lmg' ? 0.10
+          : weapon === 'smg' ? 0.065 : 0.15));
       flashTime = 0.075;
       models[weapon].flash.visible = true;
       if (hit) hitTime = 0.21;
@@ -1253,8 +1488,13 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
       if (gain > 0) {
         const toward = point.clone().sub(camera.position).normalize();
         const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-        sound.play(weapon, { gain, pan: toward.dot(right) * 0.7 });
+        sound.play(weapon, { gain, distance, pan: toward.dot(right) * 0.7 });
         // Remote muzzle flashes belong in world depth, so cliffs can hide them.
+        if (transientFlashes.length >= MAX_TRACERS) {
+          const oldest = transientFlashes.shift();
+          oldest.flash.parent?.remove(oldest.flash);
+          disposeThreeObject(oldest.flash);
+        }
         const flash = makeFlash({ viewmodel: false });
         flash.visible = true;
         flash.position.copy(point);
@@ -1267,6 +1507,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
         }
         scene.add(flash);
         transientFlashes.push({ flash, time: 0.08 });
+        smoke.emit(point, vectorFrom(direction), weapon, smokeWind);
       }
     }
     if (local) {
@@ -1275,6 +1516,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
       if (aimOrigin && aimDirection && aimDirection.lengthSq() > 0.9) {
         camera.updateMatrixWorld(true);
         const muzzle = models[weapon].group.localToWorld(models[weapon].muzzle.clone());
+        smoke.emit(muzzle, aimDirection, weapon, smokeWind);
         const aimRange = Number.isFinite(hitDistance)
           ? clamp(hitDistance, 1.01, WEAPONS[weapon].range) : WEAPONS[weapon].range;
         const target = aimOrigin.addScaledVector(aimDirection.normalize(), aimRange);
@@ -1303,6 +1545,8 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
   function showDeath() {
     if (disposed) return;
     state.dead = true;
+    releaseTrigger();
+    cancelReloadPresentation();
     renderHud();
   }
 
@@ -1315,7 +1559,35 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     renderHud();
   }
 
-  function update(dt, { moving = false, aiming: aimOverride } = {}) {
+  function cancelReloadPresentation() {
+    reloadVisualKey = null;
+    reloadVisualEnd = 0;
+    sound.cancelReload();
+    for (const model of Object.values(models)) resetReloadRig(model);
+  }
+
+  function updateReloadPresentation() {
+    const eligible = state.active && !state.dead && !state.holstered
+      && isWeapon(selectedEquipment) && state.reloading;
+    if (!eligible) {
+      if (reloadVisualKey) cancelReloadPresentation();
+      return;
+    }
+    const key = `${state.weapon}:${state.reloadingUntil}`;
+    if (reloadVisualKey !== key) {
+      cancelReloadPresentation();
+      reloadVisualKey = key;
+      reloadVisualEnd = state.reloadingUntil || state.serverNow + WEAPONS[state.weapon].reloadMs;
+      sound.playReload(state.weapon, { duration: Math.max(0.05,
+        (reloadVisualEnd - state.serverNow) / 1000) });
+    }
+    const pose = sampleReloadAnimation(state.weapon,
+      Math.max(0, reloadVisualEnd - state.serverNow));
+    applyReloadRig(models[state.weapon], state.weapon, pose);
+  }
+
+  function update(dt, { moving = false, speed, sprintFactor = 0,
+    wind, aiming: aimOverride } = {}) {
     if (disposed) return;
     const step = clamp(finite(dt), 0, 0.1);
     const hadHealthFeedback = healthFeedbackTime > 0;
@@ -1335,7 +1607,16 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     }
     if (aimOverride !== undefined) state.aiming = selectedEquipment === 'unarmed'
       ? false : Boolean(aimOverride);
-    walkPhase += step * (moving ? 9 : 2);
+    const moveTarget = moving ? clamp(finite(speed, 3.2) / 4, 0, 1.7) : 0;
+    motionAmount += (moveTarget - motionAmount) * (1 - Math.exp(-step * 9));
+    const sprintTarget = state.aiming || state.reloading ? 0 : clamp(finite(sprintFactor), 0, 1);
+    sprintAmount += (sprintTarget - sprintAmount) * (1 - Math.exp(-step * 10));
+    walkPhase += step * (2 + motionAmount * 6.4 + sprintAmount * 3);
+    const windVector = wind && Number.isFinite(wind.x) && Number.isFinite(wind.z)
+      ? new THREE.Vector3(wind.x, finite(wind.y), wind.z) : vectorFrom(wind);
+    if (windVector) smokeWind.copy(windVector);
+    else smokeWind.set(0, 0, 0);
+    updateReloadPresentation();
     recoil = Math.max(0, recoil - step * 1.7);
     flashTime = Math.max(0, flashTime - step);
     for (const [id, model] of Object.entries(models)) {
@@ -1346,19 +1627,24 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     hitTime = Math.max(0, hitTime - step);
     hitmarker.style.opacity = String(hitTime > 0 ? Math.min(1, hitTime * 8) : 0);
     const prone = state.stance === 'prone';
-    const targetX = state.aiming ? 0 : selectedEquipment === 'rifle'
-      || selectedEquipment === 'shotgun' ? 0.28 : 0.38;
-    const targetY = state.aiming ? (prone ? -0.22 : -0.18)
-      : prone ? -0.38 : state.stance === 'crouch' ? -0.34 : -0.32;
+    const targetX = state.aiming ? 0 : ['rifle', 'shotgun', 'lmg'].includes(selectedEquipment) ? 0.28 : 0.38;
+    const targetY = (state.aiming ? (prone ? -0.22 : -0.18)
+      : prone ? -0.38 : state.stance === 'crouch' ? -0.34 : -0.32) - sprintAmount * 0.13;
     const targetZ = state.aiming ? -0.48 : prone ? -0.57 : -0.63;
     const ease = 1 - Math.exp(-step * 13);
-    viewRoot.position.x += (targetX - viewRoot.position.x) * ease;
-    viewRoot.position.y += (targetY - viewRoot.position.y) * ease;
-    viewRoot.position.z += (targetZ - viewRoot.position.z) * ease;
-    viewRoot.rotation.x = recoil * 0.43;
-    viewRoot.rotation.y = recoil * 0.11;
-    viewRoot.position.y += (moving ? Math.sin(walkPhase)
-      * (prone ? 0.0003 : state.stance === 'crouch' ? 0.001 : 0.002) : 0);
+    baseViewPosition.x += (targetX - baseViewPosition.x) * ease;
+    baseViewPosition.y += (targetY - baseViewPosition.y) * ease;
+    baseViewPosition.z += (targetZ - baseViewPosition.z) * ease;
+    viewRoot.position.copy(baseViewPosition);
+    const motionScale = state.aiming ? 0.17 : prone ? 0.18 : state.stance === 'crouch' ? 0.5 : 1;
+    viewRoot.rotation.x = recoil * 0.43 - sprintAmount * 0.28
+      + Math.sin(walkPhase) * motionAmount * 0.011 * motionScale;
+    viewRoot.rotation.y = recoil * 0.11 + Math.sin(walkPhase * 0.5)
+      * motionAmount * 0.012 * motionScale;
+    viewRoot.rotation.z = sprintAmount * 0.12
+      + Math.cos(walkPhase * 0.5) * motionAmount * 0.014 * motionScale;
+    viewRoot.position.x += Math.sin(walkPhase * 0.5) * motionAmount * 0.002 * motionScale;
+    viewRoot.position.y += Math.sin(walkPhase) * motionAmount * 0.012 * motionScale;
     crosshair.style.transform = `translate(-50%,-50%) scale(${state.aiming ? 0.65 : 1})`;
     for (let i = transientFlashes.length - 1; i >= 0; i -= 1) {
       const entry = transientFlashes[i];
@@ -1383,11 +1669,14 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
       tracer.coreMaterial.opacity = 0.96 * frame.opacity;
       tracer.haloMaterial.opacity = 0.37 * frame.opacity;
     }
+    smoke.update(step, smokeWind);
     explosives.update(step);
   }
 
   function dispose() {
     if (disposed) return;
+    releaseTrigger();
+    cancelReloadPresentation();
     disposed = true;
     hud.remove();
     if (oldCrosshair) oldCrosshair.style.opacity = previousCrosshairOpacity;
@@ -1399,6 +1688,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     }
     transientFlashes.length = 0;
     while (activeTracers.length) removeTracer(activeTracers.length - 1);
+    smoke.dispose();
     void sound.dispose();
     explosives.dispose();
   }
@@ -1453,7 +1743,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
           }
       });
       models.revolver.group.add(source);
-      models.revolver.hands.visible = false;
+      models.revolver.trigger.visible = false;
       handAssetStatus = 'ready';
       hud.dataset.handAsset = handAssetStatus;
     }, undefined, () => {
@@ -1500,6 +1790,13 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
         }
       });
       models.revolver.group.add(asset);
+      const hinge = asset.getObjectByName('DEF_ReloadingHinge');
+      const sourceCylinder = asset.getObjectByName('DEF_Cylinder');
+      if (hinge) {
+        models.revolver.rig.sourceHinge = hinge;
+        models.revolver.rig.sourceCylinder = sourceCylinder;
+        initializeReloadRig(models.revolver);
+      }
       models.revolver.gun.visible = false;
       models.revolver.group.updateMatrixWorld(true);
       models.revolver.muzzle.copy(models.revolver.group.worldToLocal(
@@ -1544,6 +1841,10 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
           }
         });
         models.rifle.group.add(asset);
+        const bolts = [];
+        asset.traverse((node) => { if (/rifle_7_62_bolt_[ab]$/.test(node.name)) bolts.push(node); });
+        models.rifle.rig.sourceBolts = bolts;
+        initializeReloadRig(models.rifle);
         models.rifle.gun.visible = false;
         models.rifle.muzzle.set(0, 0.075, -0.98);
         models.rifle.flash.position.copy(models.rifle.muzzle);
@@ -1556,6 +1857,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     openEquipmentWheel, moveEquipmentWheel, rotateEquipmentWheel,
     closeEquipmentWheel,
     get selectedWeapon() { return state.weapon; },
+    get aiming() { return state.aiming; },
     get selectedEquipment() { return selectedEquipment; },
     get equipmentWheelOpen() { return wheelOpen; },
     get revolverAssetStatus() { return revolverAssetStatus; },
@@ -1573,6 +1875,11 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     syncExplosives: explosives.syncExplosives,
     removeExplosive: explosives.removeExplosive,
     update,
+    unlockAudio() { return sound.unlock(); },
+    get activeSmokeCount() { return smoke.activeCount; },
+    get audioState() { return sound.getState(); },
+    get reloadProgress() { return reloadVisualKey ? sampleReloadAnimation(state.weapon,
+      Math.max(0, reloadVisualEnd - state.serverNow))?.progress ?? 0 : null; },
     setMuted(value) { sound.setMuted(value); explosives.setMuted(value); },
     setVolume(value) { sound.setVolume(value); explosives.setVolume(value); },
     dispose, element: hud };

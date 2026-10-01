@@ -8,11 +8,13 @@ export const MAX_GRENADES = 3;
 export const MAX_MINES = 3;
 export const MAX_ARMOR = 100;
 export const STARTER_GUNS = Object.freeze(['revolver', 'rifle']);
-export const GUN_IDS = Object.freeze(['revolver', 'rifle', 'shotgun']);
+export const GUN_IDS = Object.freeze(Object.keys(WEAPONS));
 export const ITEM_DEFINITIONS = Object.freeze({
   revolver: Object.freeze({ kind: 'gun', label: 'Service Revolver' }),
   rifle: Object.freeze({ kind: 'gun', label: 'Hunting Rifle' }),
   shotgun: Object.freeze({ kind: 'gun', label: 'Pump Shotgun' }),
+  smg: Object.freeze({ kind: 'gun', label: 'Patrol SMG' }),
+  lmg: Object.freeze({ kind: 'gun', label: 'Support LMG' }),
   grenade: Object.freeze({ kind: 'grenade', label: 'Grenade' }),
   mine: Object.freeze({ kind: 'mine', label: 'Proximity Mine' }),
   medkit: Object.freeze({ kind: 'medkit', label: 'Field Medkit', heal: 40 }),
@@ -172,6 +174,7 @@ function shuffled(values, random) {
 
 const WORLD_ITEM_IDS = Object.freeze([
   'revolver', 'rifle', 'rifle', 'shotgun', 'shotgun', 'shotgun', 'shotgun',
+  'smg', 'smg', 'smg', 'lmg', 'lmg',
   ...Array(12).fill('grenade'), ...Array(10).fill('mine'),
   ...Array(7).fill('medkit'), ...Array(8).fill('ammo'),
   ...Array(7).fill('armor'),
