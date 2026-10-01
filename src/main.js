@@ -33,6 +33,9 @@ import { createTouchControls } from './touchControls.js';
 import { orientFirstPersonCamera } from './firstPersonCamera.js';
 import { createLighthouseGlare } from './lighthouseGlare.js';
 import { useTouchControls } from './inputMode.js';
+import { createVoiceChat } from './voiceChat.js';
+import { createVoiceChatUI } from './voiceChatUi.js';
+import './voiceChatUi.css';
 import {
   PLAYER_RADIUS, archiveFurnitureBlocks, archiveFurnitureBlocksMoveFrom,
   buildingWallBlocks, circlesBlock, radioFurnitureBlocks,
@@ -1283,6 +1286,10 @@ combat.setState({ mode: 'solo', ammo: localAmmo.revolver,
   serverNow: performance.now() });
 syncSoloNpcs();
 createMultiplayerRoomUI({ client: multiplayer });
+const voiceChat = createVoiceChat({ client: multiplayer });
+const voiceChatUI = createVoiceChatUI({ voice: voiceChat, client: multiplayer,
+  mobile: touchEnabled });
+voiceChat.setMode(touchEnabled ? 'open' : 'push-to-talk');
 multiplayer.on('joined', (state) => {
   climateSampleTime = -Infinity;
   fauna.resetAnimals();
@@ -1526,6 +1533,8 @@ let mouseDragging = false;
 let fallbackPointerStart = null;
 window.addEventListener('blur', () => {
   keys.clear(); touchControls.reset(); mouseDragging = false;
+  voiceChat.setPushToTalk(false);
+  void voiceChat.setMuted(true);
   fallbackPointerStart = null;
   combat.setAim(false);
   combat.closeEquipmentWheel({ commit: false });
@@ -1785,6 +1794,8 @@ function frame(now) {
   if (roomState.room) remotePlayers.update(now, dt, camera);
   const combatVisible = Boolean(started && !menuOpen && !mapOpen
     && !cinematicCapture?.active && (!roomState.room || roomState.connected));
+  voiceChatUI.setGameplayActive(Boolean(started && !menuOpen && !mapOpen
+    && !cinematicCapture?.active));
   const combatHolstered = Boolean(driving.active || drone.active
     || cliffFall.phase !== 'grounded');
   if (combatVisible !== lastCombatVisible || combatHolstered !== lastCombatHolstered) {

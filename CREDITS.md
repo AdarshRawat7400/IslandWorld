@@ -115,3 +115,7 @@ The pump shotgun, grenade and mine meshes, procedural revolver and rifle fallbac
 | [Libre Baskerville](https://fontsource.org/fonts/libre-baskerville) via Fontsource | Display text | SIL OFL 1.1 |
 
 The [bundled license file](public/THIRD_PARTY_LICENSES.md) includes the required notices for Three.js, Open Water, WindSweptGrass, EZ-Tree, webgl-noise, the cited weather reference, and both font families. Installed package licenses are also available in `node_modules/`. Package versions are locked by `package-lock.json`.
+
+## Room voice software
+
+Room voice uses LiveKit's JavaScript and server SDKs (Apache 2.0). Source links and the full license are included in public/THIRD_PARTY_LICENSES.md; setup and verification are documented in VOICE_CHAT.md.

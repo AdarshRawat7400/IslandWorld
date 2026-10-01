@@ -56,6 +56,16 @@ Open **Private Multiplayer** in the menu, enter a name, then create an **Explore
 
 The two clients need to reach the same room server. Localhost on a friend's computer refers to their computer; the Firebase build uses the Render HTTPS/WSS server configured in `.env.production` so friends on different networks can join the same room. See [`MULTIPLAYER_SERVER.md`](MULTIPLAYER_SERVER.md) for hosting, origin, and persistence details. Render Free sleeps after inactivity, so the first room connection may take time. A server restart ends in-memory rooms.
 
+## Room voice chat
+
+Private rooms support opt-in WebRTC audio through a LiveKit SFU. Join **Room Voice**
+in the menu, then explicitly enable the microphone. Desktop supports **V**
+push-to-talk and open microphone; mobile voice controls stay inside **MORE**.
+Individual mute, deafen, volume, speaking indicators, and privacy-safe reconnects
+are included. See [`VOICE_CHAT.md`](VOICE_CHAT.md) for hosting and verification.
+The gameplay server needs LiveKit credentials before online voice can connect;
+unconfigured voice never blocks gameplay.
+
 ## Firebase Hosting
 
 This project targets the separate Firebase project `islandworld-3ccb4` in the `rawatadarsh2763@gmail.com` account. The Hosting configuration deploys the built `dist/` folder. Sign in to Firebase CLI with that Google account, then run:

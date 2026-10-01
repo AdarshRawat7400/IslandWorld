@@ -18,6 +18,7 @@ import { createNpcCombatant, rayNpcHit, npcThreatenedByShot,
   alertNpc, applyNpcDamage, npcAttackDecision } from '../src/npcCombatRules.js';
 import { createDynamicWeather } from '../src/dynamicWeather.js';
 import { shotBlockedByStructures } from './lineOfSight.js';
+import { createVoiceService } from './voiceService.js';
 import {
   createWorldPickupSpawns, createInventory, canCollectItem, collectItem,
   consumeItem, selectGun, cycleGun, inventoryDrops, canApplySupply, applySupply,
@@ -43,6 +44,8 @@ const MAX_ROOM_PICKUPS = 90;
 const MAX_ROOM_EXPLOSIVES = 64;
 const MAX_PLAYER_EXPLOSIVES = 8;
 const USE_INTERVAL_MS = 350;
+const VOICE_CREDENTIAL_WINDOW_MS = 60000;
+const VOICE_CREDENTIAL_LIMIT = 6;
 const wildlifeWeatherClock = createDynamicWeather();
 
 const success = (body = {}) => ({ ok: true, ...body });
@@ -113,6 +116,7 @@ function createPlayer(room, name, now) {
     ammo: freshAmmo(), inventory: createInventory(), lastUseAt: -Infinity,
     connected: true, socketId: null, lastMoveAt: now, hasMoved: false,
     lastSafe: { ...spawn }, droneAnchor: null, recoverAt: 0, disconnectTimer: null,
+    voiceRequested: false, voiceAttempts: [],
   };
 }
 
@@ -148,6 +152,7 @@ function wildlifeTargets(room, now) {
 function roomSnapshot(room, now) {
   return {
     code: room.code, mode: room.mode, serverNow: now,
+    voice: { available: room.voiceAvailable },
     world: { ...room.world },
     players: [...room.players.values()].map(publicPlayer),
     vehicles: [...room.vehicles.values()].map((vehicle) => ({ ...vehicle })),
@@ -187,7 +192,8 @@ function makeRoom(code, mode, now) {
       islandTerrainHeightAt(person.x, person.z))),
   ];
   return {
-    code, mode, players: new Map(), pickups: new Map(pickups.map((item) => [item.id, item])),
+    code, mode, voiceRoomId: `iw-${randomUUID()}`, voiceAvailable: false,
+    players: new Map(), pickups: new Map(pickups.map((item) => [item.id, item])),
     pickupRespawns: new Map(), explosives: new Map(),
     vehicles: new Map(PRISON_LAYOUT.vehicles.map((vehicle) => [vehicle.id,
       { id: vehicle.id, x: vehicle.x, z: vehicle.z, heading: vehicle.heading,
@@ -218,11 +224,13 @@ export function createMultiplayerServer({
   host = '127.0.0.1', port = 3001, allowedOrigins = [],
   clock = () => Date.now(), random = Math.random, snapshotMs = ROOM_TICK_MS,
   reconnectGraceMs = RECONNECT_GRACE_MS,
+  voiceService = createVoiceService(),
 } = {}) {
   const httpServer = createServer((request, response) => {
     if (request.url === '/healthz') {
       response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      response.end(JSON.stringify({ ok: true, rooms: rooms.size }));
+      response.end(JSON.stringify({ ok: true, rooms: rooms.size,
+        voice: { available: Boolean(voiceService.available) } }));
       return;
     }
     response.writeHead(404); response.end();
@@ -237,6 +245,23 @@ export function createMultiplayerServer({
   });
   const rooms = new Map();
   const roomChannel = (code) => `island:${code}`;
+
+  function removeVoice(room, player) {
+    if (!player.voiceRequested) return;
+    player.voiceRequested = false;
+    // Call immediately to establish the service's serialization fence, then
+    // catch background failure. Voice outages must never break game cleanup.
+    try {
+      Promise.resolve(voiceService.removeParticipant({ roomId: room.voiceRoomId,
+        identity: player.id })).catch(() => {});
+    } catch { /* best-effort cleanup; later credential issuance retries */ }
+  }
+
+  function deleteRoom(room) {
+    rooms.delete(room.code);
+    try { Promise.resolve(voiceService.deleteRoom(room.voiceRoomId)).catch(() => {}); }
+    catch { /* gameplay removal succeeds even when the voice service is down */ }
+  }
 
   function getSession(socket) {
     const { code, playerId } = socket.data;
@@ -428,6 +453,8 @@ export function createMultiplayerServer({
     const session = getSession(socket);
     if (!session) return;
     const { room, player } = session;
+    socket.data.voiceRevision = (socket.data.voiceRevision || 0) + 1;
+    removeVoice(room, player);
     socket.leave(roomChannel(room.code));
     socket.data.code = null;
     socket.data.playerId = null;
@@ -437,12 +464,12 @@ export function createMultiplayerServer({
     if (explicit) {
       if (player.disconnectTimer) clearTimeout(player.disconnectTimer);
       room.players.delete(player.id);
-      if (!room.players.size) rooms.delete(room.code);
+      if (!room.players.size) deleteRoom(room);
     } else {
       player.disconnectTimer = setTimeout(() => {
         if (player.connected) return;
         room.players.delete(player.id);
-        if (!room.players.size) rooms.delete(room.code);
+        if (!room.players.size) deleteRoom(room);
         else roster(room);
       }, reconnectGraceMs);
       player.disconnectTimer.unref?.();
@@ -451,6 +478,7 @@ export function createMultiplayerServer({
   }
 
   function bind(socket, room, player) {
+    socket.data.voiceRevision = (socket.data.voiceRevision || 0) + 1;
     player.connected = true;
     player.socketId = socket.id;
     if (player.disconnectTimer) { clearTimeout(player.disconnectTimer); player.disconnectTimer = null; }
@@ -479,6 +507,7 @@ export function createMultiplayerServer({
       if (!MODES.has(mode)) return safeAck(ack, failure('invalid_mode'));
       const code = newCode(rooms);
       const room = makeRoom(code, mode, clock());
+      room.voiceAvailable = Boolean(voiceService.available);
       rooms.set(code, room);
       const player = createPlayer(room, data?.name, clock());
       room.players.set(player.id, player);
@@ -509,9 +538,13 @@ export function createMultiplayerServer({
       if (!player) return safeAck(ack, failure('resume_expired', 'Session expired. Join again.'));
       if (player.connected && player.socketId !== socket.id) {
         const previous = io.sockets.sockets.get(player.socketId);
+        removeVoice(room, player);
         previous?.emit('room:replaced');
         previous?.leave(roomChannel(room.code));
-        if (previous) { previous.data.code = null; previous.data.playerId = null; }
+        if (previous) {
+          previous.data.voiceRevision = (previous.data.voiceRevision || 0) + 1;
+          previous.data.code = null; previous.data.playerId = null;
+        }
       }
       safeAck(ack, bind(socket, room, player));
     });
@@ -519,6 +552,46 @@ export function createMultiplayerServer({
     socket.on('room:leave', (_data, ack) => {
       if (!getSession(socket)) return safeAck(ack, failure('not_in_room'));
       detach(socket, { explicit: true });
+      safeAck(ack, success());
+    });
+
+    socket.on('voice:join', async (_data, ack) => {
+      const session = getSession(socket);
+      if (!session) return safeAck(ack, failure('not_in_room'));
+      if (!voiceService.available) return safeAck(ack,
+        failure('voice_unavailable', 'Voice chat is not configured on this room server.'));
+      const { room, player } = session;
+      const now = clock();
+      player.voiceAttempts = player.voiceAttempts.filter((at) => now - at < VOICE_CREDENTIAL_WINDOW_MS);
+      if (socket.data.voicePending || player.voiceAttempts.length >= VOICE_CREDENTIAL_LIMIT) {
+        return safeAck(ack, failure('voice_rate_limited', 'Please wait before reconnecting voice.'));
+      }
+      player.voiceAttempts.push(now);
+      player.voiceRequested = true;
+      socket.data.voicePending = true;
+      const revision = socket.data.voiceRevision;
+      try {
+        const credentials = await voiceService.issue({ roomId: room.voiceRoomId,
+          identity: player.id, name: player.name });
+        const current = getSession(socket);
+        if (current?.room !== room || current.player !== player
+          || socket.data.voiceRevision !== revision) {
+          return safeAck(ack, failure('session_changed'));
+        }
+        // Never include API credentials or trust client-selected room/identity.
+        safeAck(ack, success({ url: credentials.url, token: credentials.token,
+          identity: player.id, roomId: room.voiceRoomId,
+          expiresIn: credentials.expiresIn }));
+      } catch {
+        safeAck(ack, failure('voice_unavailable', 'Voice chat could not connect. Please try again.'));
+      } finally { socket.data.voicePending = false; }
+    });
+
+    socket.on('voice:leave', (_data, ack) => {
+      const session = getSession(socket);
+      if (!session) return safeAck(ack, failure('not_in_room'));
+      socket.data.voiceRevision = (socket.data.voiceRevision || 0) + 1;
+      removeVoice(session.room, session.player);
       safeAck(ack, success());
     });
 
@@ -1064,6 +1137,7 @@ export function createMultiplayerServer({
       }
       await new Promise((resolve) => io.close(resolve));
       if (httpServer.listening) await new Promise((resolve) => httpServer.close(resolve));
+      try { await voiceService.close?.(); } catch { /* voice cleanup is best effort */ }
     },
   };
 }
