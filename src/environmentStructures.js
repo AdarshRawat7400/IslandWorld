@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { landingBoardwalkSections } from './landingBoardwalk.js';
+import { landingBoardwalkSections, landingBoardwalkTopAt } from './landingBoardwalk.js';
 import { SITES, NAV_LIGHTS } from './worldSites.js';
 
 // Physical structures extracted from the original island scene.
@@ -139,8 +139,9 @@ export function createEnvironmentStructures(scene, world) {
     mesh.name = name;
     dock.add(mesh);
   }
+  const boardwalkSections = landingBoardwalkSections(world.terrainHeight);
   for (const { startZ: z, endZ: zNext, yStart, yEnd, span, pitch }
-    of landingBoardwalkSections(world.terrainHeight)) {
+    of boardwalkSections) {
     const plank = addRect(dock, 6.6, 0.18, span + 0.06,
       0, (yStart + yEnd) / 2, (z + zNext) / 2, 0x584d3f);
     plank.material.dispose();
@@ -200,8 +201,11 @@ export function createEnvironmentStructures(scene, world) {
     // newly walkable crest, keeping inland props and low landing coves stable.
     const cliffBlend = THREE.MathUtils.smoothstep(world.coastalRadius(x, z), 0.93, 0.955)
       * THREE.MathUtils.smoothstep(analytic, 10, 18);
-    const ground = THREE.MathUtils.lerp(analytic,
+    let ground = THREE.MathUtils.lerp(analytic,
       world.renderedTerrainHeight(x, z), cliffBlend);
+    const boardwalkTop = Math.abs(x) <= 3.3
+      ? landingBoardwalkTopAt(boardwalkSections, z) : null;
+    if (boardwalkTop !== null) ground = Math.max(ground, boardwalkTop + 0.02);
     return onSouthPier(x, z) ? Math.max(pierY + 0.14, ground) : ground;
   }
 

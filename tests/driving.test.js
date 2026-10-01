@@ -53,6 +53,24 @@ test('A steers left and reverse steering follows the car’s travel direction', 
     'D while reversing should swing the car’s rear to the right');
 });
 
+test('remote room snapshots move other cars without overriding the local driver', () => {
+  const localCar = makeVehicle('local');
+  const otherCar = makeVehicle('other');
+  const drive = createDriving([localCar, otherCar], () => 0);
+  drive.enter('local');
+  drive.syncRemoteVehicles([
+    { id: 'local', x: 40, z: 40, heading: 2, speed: 8 },
+    { id: 'other', x: 8, z: 5, heading: 0.4, speed: 4 },
+  ]);
+  assert.equal(localCar.x, 0);
+  assert.equal(otherCar.x, 8);
+  drive.syncRemoteVehicles([{ id: 'other', x: 12, z: 5, heading: 0.8, speed: 4 }]);
+  drive.updateRemoteVehicles(1 / 60);
+  assert.ok(otherCar.x > 8 && otherCar.x < 12);
+  assert.equal(otherCar.collider.x, otherCar.x);
+  assert.equal(localCar.x, 0);
+});
+
 test('whole vehicle footprint stops at obstacles and steep ground', () => {
   const obstacleCar = makeVehicle();
   const drive = createDriving([obstacleCar], () => 0);

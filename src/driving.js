@@ -74,6 +74,7 @@ export function createDriving(vehicles, terrainHeight, { onRoad = () => true } =
     throw new TypeError('createDriving requires vehicle records and terrainHeight(x,z)');
   }
   let active = null;
+  const remoteTargets = new Map();
   for (const vehicle of vehicles) {
     if (!vehicle.group || !vehicle.collider || !TUNING[vehicle.type]) {
       throw new TypeError(`Vehicle ${vehicle.id || '?'} lacks a movable group, collider, or type`);
@@ -129,6 +130,14 @@ export function createDriving(vehicles, terrainHeight, { onRoad = () => true } =
     return null;
   }
 
+  function forceExit() {
+    if (!active) return;
+    active.speed = 0;
+    active.steering = 0;
+    active.setBrakeLights?.(false);
+    active = null;
+  }
+
   function update(dt, { throttle = 0, steer = 0, brake = false } = {}, canPlace) {
     if (!active || !Number.isFinite(dt) || dt <= 0) return active;
     const vehicle = active;
@@ -174,6 +183,50 @@ export function createDriving(vehicles, terrainHeight, { onRoad = () => true } =
     }
     return vehicle;
   }
+
+  // Room snapshots contain only the three vehicle poses, never world geometry.
+  // The local driver's kinematic simulation remains responsive; other cars
+  // ease toward their latest server pose between network updates.
+  function syncRemoteVehicles(states = []) {
+    if (!Array.isArray(states)) return;
+    for (const state of states) {
+      const vehicle = vehicles.find((candidate) => candidate.id === state?.id);
+      if (!vehicle || vehicle === active || ![state.x, state.z, state.heading]
+        .every(Number.isFinite)) continue;
+      const target = { x: state.x, z: state.z, heading: state.heading,
+        speed: Number.isFinite(state.speed) ? state.speed : 0 };
+      if (!remoteTargets.has(vehicle.id)) {
+        Object.assign(vehicle, target);
+        placeVehicle(vehicle, terrainHeight);
+      }
+      remoteTargets.set(vehicle.id, target);
+    }
+  }
+
+  function updateRemoteVehicles(dt) {
+    if (!(dt > 0)) return;
+    const blend = 1 - Math.exp(-Math.min(dt, 0.1) * 12);
+    for (const [id, target] of remoteTargets) {
+      const vehicle = vehicles.find((candidate) => candidate.id === id);
+      if (!vehicle || vehicle === active) continue;
+      const gap = Math.hypot(target.x - vehicle.x, target.z - vehicle.z);
+      if (gap > 20) {
+        vehicle.x = target.x;
+        vehicle.z = target.z;
+      } else {
+        vehicle.x += (target.x - vehicle.x) * blend;
+        vehicle.z += (target.z - vehicle.z) * blend;
+      }
+      const headingGap = Math.atan2(Math.sin(target.heading - vehicle.heading),
+        Math.cos(target.heading - vehicle.heading));
+      vehicle.heading += headingGap * blend;
+      vehicle.speed = target.speed;
+      placeVehicle(vehicle, terrainHeight);
+      vehicle.animateWheels?.(vehicle.speed, 0, dt);
+    }
+  }
+
+  function clearRemoteVehicles() { remoteTargets.clear(); }
 
   function cameraPose() {
     if (!active) return null;
@@ -224,6 +277,7 @@ export function createDriving(vehicles, terrainHeight, { onRoad = () => true } =
   return {
     vehicles,
     get active() { return active; },
-    nearbyVehicle, enter, exit, update, cameraPose, snapshot, restore,
+    nearbyVehicle, enter, exit, forceExit, update, syncRemoteVehicles,
+    updateRemoteVehicles, clearRemoteVehicles, cameraPose, snapshot, restore,
   };
 }

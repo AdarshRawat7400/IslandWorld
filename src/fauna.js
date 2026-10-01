@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { islandCoastalRadiusAt, islandTerrainHeightAt } from './world.js';
+import { isRoad } from './roads.js';
+import { isLake } from './inlandLake.js';
 
 // Original, low-poly coastal wildlife. All forms and markings are generated here;
 // no external models, textures, audio, or animation data are needed.
@@ -8,6 +11,14 @@ const BIRD_FLOCKS = Object.freeze([
   { x: -270, z: 100, y: 65, radius: 30 },
   { x: -125, z: -280, y: 63, radius: 34 },
   { x: 270, z: -130, y: 66, radius: 28 },
+  { x: 205, z: 200, y: 61, radius: 28 },
+  { x: -205, z: 220, y: 64, radius: 27 },
+  { x: 0, z: -280, y: 61, radius: 33 },
+  { x: -280, z: -100, y: 66, radius: 29 },
+  { x: 145, z: 5, y: 66, radius: 25 },
+  { x: -130, z: 0, y: 77, radius: 24 },
+  { x: 75, z: -125, y: 71, radius: 27 },
+  { x: -55, z: 290, y: 56, radius: 25 },
 ]);
 
 const SHEEP_CANDIDATES = Object.freeze([
@@ -19,11 +30,119 @@ const RABBIT_CANDIDATES = Object.freeze([
   [-154, 115], [-180, 93], [171, 145], [174, 155],
 ]);
 
-const BIRD_COUNT = 12;
-const STORM_BIRD_COUNT = 4;
+export const WILDLIFE_POPULATION = Object.freeze({ birds: 120, sheep: 52, rabbits: 78 });
+const BIRD_COUNT = WILDLIFE_POPULATION.birds;
+const STORM_BIRD_COUNT = BIRD_FLOCKS.length * 3;
 const LAKE_BANK_CLEARANCE = 5;
+const VISUAL_RANGE = Object.freeze({ bird: 250, sheep: 170, rabbit: 135 });
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 const finite = (value, fallback) => Number.isFinite(value) ? value : fallback;
+
+export const WILDLIFE_KINDS = Object.freeze({
+  bird: Object.freeze({ radius: 0.6, maxHealth: 20, respawnMs: 90000 }),
+  sheep: Object.freeze({ radius: 0.92, maxHealth: 55, respawnMs: 90000 }),
+  rabbit: Object.freeze({ radius: 0.48, maxHealth: 20, respawnMs: 90000 }),
+});
+
+function safeWander(home, proposedX, proposedZ, radius, options) {
+  const terrainHeight = options.terrainHeight;
+  if (options.multiplayer) {
+    const y = typeof terrainHeight === 'function'
+      ? terrainHeight(proposedX, proposedZ) : home.y;
+    // Shared room paths are intentionally independent of client-only foliage,
+    // props and nearby players. Every room client sees the same animal route.
+    return Number.isFinite(y) && y >= 18
+      ? { x: proposedX, y, z: proposedZ } : home;
+  }
+  if (typeof terrainHeight !== 'function') {
+    return { x: proposedX, y: home.y, z: proposedZ };
+  }
+  const cameraX = finite(options.playerX, Infinity);
+  const cameraZ = finite(options.playerZ, Infinity);
+  if (Number.isFinite(cameraX) && Number.isFinite(cameraZ)
+    && Math.hypot(home.x - cameraX, home.z - cameraZ) > VISUAL_RANGE.sheep + 25) {
+    // Far-off animals need neither road/obstacle queries nor animated wander.
+    return home;
+  }
+  const coastalRadius = options.coastalRadius || (() => 0);
+  const isRoad = options.isRoad || (() => false);
+  const isBlocked = options.isBlocked || (() => false);
+  const isLake = options.isLake || (() => false);
+  if (!Number.isFinite(proposedX) || !Number.isFinite(proposedZ)
+    || coastalRadius(proposedX, proposedZ) >= 0.9
+    || isRoad(proposedX, proposedZ, 3 + radius)
+    || isLake(proposedX, proposedZ, LAKE_BANK_CLEARANCE + radius)
+    || isBlocked(proposedX, proposedZ, radius)) return home;
+  const y = terrainHeight(proposedX, proposedZ);
+  if (!Number.isFinite(y) || y < 18) return home;
+  return { x: proposedX, y, z: proposedZ };
+}
+
+/** Pure target poses shared by the rendered fauna and room hit validation. */
+export function wildlifeTargetsAt(homes, elapsed, weather = 'mist', options = {}) {
+  const time = Math.max(0, finite(elapsed, 0));
+  const storm = weather === 'storm';
+  const rain = weather === 'rain';
+  const birdCount = storm ? STORM_BIRD_COUNT : BIRD_COUNT;
+  const rabbitCount = storm ? 0 : rain ? Math.ceil(homes.rabbits.length / 2) : homes.rabbits.length;
+  const playerX = finite(options.playerX, Infinity);
+  const playerZ = finite(options.playerZ, Infinity);
+  const targets = [];
+  for (let i = 0; i < BIRD_COUNT; i++) {
+    const rank = Math.floor(i / BIRD_FLOCKS.length);
+    const flockIndex = i % BIRD_FLOCKS.length;
+    const flock = BIRD_FLOCKS[flockIndex];
+    const phase = rank * 2.39996323 + flockIndex * 0.37;
+    const radius = flock.radius * (0.68 + rank * 0.088);
+    const speed = (0.22 + rank * 0.012 + flockIndex * 0.003)
+      * (storm ? 1.48 : rain ? 1.2 : 1);
+    const angle = phase + time * speed;
+    const aspect = 0.68 + rank * 0.025;
+    targets.push({ id: `bird-${i}`, kind: 'bird',
+      x: flock.x + Math.cos(angle) * radius,
+      y: flock.y - (storm ? 4.5 : 0) + Math.sin(time * 0.78 + phase) * 1.5,
+      z: flock.z + Math.sin(angle) * radius * aspect,
+      radius: WILDLIFE_KINDS.bird.radius, maxHealth: WILDLIFE_KINDS.bird.maxHealth,
+      active: i < birdCount });
+  }
+  for (let i = 0; i < homes.sheep.length; i++) {
+    const home = homes.sheep[i];
+    const phase = i * 2.17;
+    const wander = storm ? 0.45 : 1;
+    const next = safeWander(home,
+      home.x + Math.sin(time * 0.12 + phase) * 2.2 * wander,
+      home.z + Math.cos(time * 0.105 + phase * 1.23) * 1.7 * wander,
+      1, options);
+    targets.push({ id: `sheep-${i}`, kind: 'sheep',
+      x: next.x, y: next.y + 0.70, z: next.z,
+      radius: WILDLIFE_KINDS.sheep.radius, maxHealth: WILDLIFE_KINDS.sheep.maxHealth,
+      active: true });
+  }
+  for (let i = 0; i < homes.rabbits.length; i++) {
+    const home = homes.rabbits[i];
+    const phase = i * 2.53;
+    const playerKnown = !options.multiplayer
+      && Number.isFinite(playerX) && Number.isFinite(playerZ);
+    const dx = playerKnown ? home.x - playerX : 0;
+    const dz = playerKnown ? home.z - playerZ : 0;
+    const playerDistance = playerKnown ? Math.hypot(dx, dz) : Infinity;
+    const flee = clamp((20 - playerDistance) / 16, 0, 1) * 3.6;
+    const escapeX = Number.isFinite(playerDistance) && playerDistance > 0.01
+      ? dx / playerDistance * flee : 0;
+    const escapeZ = Number.isFinite(playerDistance) && playerDistance > 0.01
+      ? dz / playerDistance * flee : 0;
+    const next = safeWander(home,
+      home.x + Math.sin(time * 0.37 + phase) * 1.25 + escapeX,
+      home.z + Math.cos(time * 0.32 + phase) * 1.15 + escapeZ,
+      0.35, options);
+    const hop = Math.max(0, Math.sin(time * 6.5 + phase)) * (flee > 0 ? 0.11 : 0.04);
+    targets.push({ id: `rabbit-${i}`, kind: 'rabbit',
+      x: next.x, y: next.y + 0.36 + hop, z: next.z,
+      radius: WILDLIFE_KINDS.rabbit.radius, maxHealth: WILDLIFE_KINDS.rabbit.maxHealth,
+      active: i < rabbitCount });
+  }
+  return targets;
+}
 
 function findGroundHome([originX, originZ], terrainHeight, coastalRadius, isRoad,
   isBlocked, isLake, clearance) {
@@ -49,6 +168,31 @@ function findGroundHome([originX, originZ], terrainHeight, coastalRadius, isRoad
   return null;
 }
 
+function generatedCandidate(index, phase) {
+  // Two incommensurate rotations distribute each species across the entire
+  // high island instead of making a visible grid or a dense central cluster.
+  const area = (index * 0.618033988749895 + phase) % 1;
+  const bearing = (index * 0.754877666246693 + phase * 0.618) % 1;
+  const radius = 290 * Math.sqrt(0.055 + area * 0.945);
+  const angle = bearing * Math.PI * 2;
+  return [Math.cos(angle) * radius, Math.sin(angle) * radius];
+}
+
+function planGroundSpecies(anchors, desired, separation, clearance,
+  terrainHeight, coastalRadius, isRoad, isBlocked, isLake, phase) {
+  const result = [];
+  for (let index = 0; index < 1400 && result.length < desired; index++) {
+    const seed = index < anchors.length ? anchors[index]
+      : generatedCandidate(index - anchors.length, phase);
+    const home = findGroundHome(seed, terrainHeight, coastalRadius, isRoad,
+      isBlocked, isLake, clearance);
+    if (!home || result.some((prior) =>
+      Math.hypot(prior.x - home.x, prior.z - home.z) < separation)) continue;
+    result.push(home);
+  }
+  return result;
+}
+
 /** Deterministic safe homes; animals never start in roads or on a cliff lip. */
 export function planCoastalFauna(terrainHeight, {
   coastalRadius = () => 0,
@@ -58,12 +202,22 @@ export function planCoastalFauna(terrainHeight, {
 } = {}) {
   if (typeof terrainHeight !== 'function') throw new TypeError('terrainHeight must be a function');
   return {
-    sheep: SHEEP_CANDIDATES.map((candidate) => findGroundHome(candidate, terrainHeight,
-      coastalRadius, isRoad, isBlocked, isLake, 4)).filter(Boolean),
-    rabbits: RABBIT_CANDIDATES.map((candidate) => findGroundHome(candidate, terrainHeight,
-      coastalRadius, isRoad, isBlocked, isLake, 2.5)).filter(Boolean),
+    sheep: planGroundSpecies(SHEEP_CANDIDATES, WILDLIFE_POPULATION.sheep,
+      20, 4, terrainHeight, coastalRadius, isRoad, isBlocked, isLake, 0.113),
+    rabbits: planGroundSpecies(RABBIT_CANDIDATES, WILDLIFE_POPULATION.rabbits,
+      13, 2.5, terrainHeight, coastalRadius, isRoad, isBlocked, isLake, 0.487),
   };
 }
+
+// The room authority and clients use exactly the same safe island homes.
+// Only terrain/road/lake functions are evaluated here: no scene is constructed.
+const roomHomes = planCoastalFauna(islandTerrainHeightAt, {
+  coastalRadius: islandCoastalRadiusAt, isRoad, isLake,
+});
+export const SERVER_WILDLIFE_HOMES = Object.freeze({
+  sheep: Object.freeze(roomHomes.sheep.map((home) => Object.freeze(home))),
+  rabbits: Object.freeze(roomHomes.rabbits.map((home) => Object.freeze(home))),
+});
 
 function makeWingGeometry(side) {
   const geometry = new THREE.BufferGeometry();
@@ -167,10 +321,11 @@ function makeBirds(scene, resources) {
   const beaks = instanced(beakGeometry, beakMaterial, BIRD_COUNT, 'Coastal bird beaks');
   const tails = instanced(tailGeometry, tailMaterial, BIRD_COUNT, 'Coastal bird tails');
   const birds = [];
-  for (let rank = 0; rank < 3; rank++) for (let flock = 0; flock < BIRD_FLOCKS.length; flock++) {
+  for (let rank = 0; rank < BIRD_COUNT / BIRD_FLOCKS.length; rank++) {
+    for (let flock = 0; flock < BIRD_FLOCKS.length; flock++) {
     const index = birds.length;
-    const dark = (flock === 2 && rank === 2) || (flock === 1 && rank === 2);
-    const bodyColor = dark ? 0x303b3e : rank === 1 ? 0xc1c7c2 : 0xe0e2d8;
+    const dark = (flock + rank * 3) % 7 === 0;
+    const bodyColor = dark ? 0x303b3e : rank % 3 === 1 ? 0xc1c7c2 : 0xe0e2d8;
     const wingColor = dark ? 0x202c30 : 0x88979b;
     body.setColorAt(index, new THREE.Color(bodyColor));
     head.setColorAt(index, new THREE.Color(bodyColor));
@@ -178,10 +333,11 @@ function makeBirds(scene, resources) {
     leftWings.setColorAt(index, new THREE.Color(wingColor));
     beaks.setColorAt(index, new THREE.Color(dark ? 0x4a4a44 : 0xe1bd78));
     tails.setColorAt(index, new THREE.Color(dark ? 0x263137 : 0xabb4b1));
-    birds.push({ flock, rank, phase: rank * 2.14 + flock * 0.37,
-      radius: BIRD_FLOCKS[flock].radius * (0.8 + rank * 0.13),
-      speed: 0.22 + rank * 0.032 + flock * 0.012,
-      size: dark ? 0.91 : 1 + rank * 0.055 });
+    birds.push({ flock, rank, phase: rank * 2.39996323 + flock * 0.37,
+      radius: BIRD_FLOCKS[flock].radius * (0.68 + rank * 0.088),
+      speed: 0.22 + rank * 0.012 + flock * 0.003,
+      size: dark ? 0.91 : 0.9 + (rank % 4) * 0.045 });
+    }
   }
   scene.add(body, head, wings, leftWings, beaks, tails);
   return { birds, body, head, wings, leftWings, beaks, tails,
@@ -325,8 +481,10 @@ export function createFauna(scene, terrainHeight, options = {}) {
   const homes = planCoastalFauna(terrainHeight, options);
   const resources = [];
   const birds = makeBirds(scene, resources);
-  const sheep = makeSheep(scene, homes.sheep.length, resources);
-  const rabbits = makeRabbits(scene, homes.rabbits.length, resources);
+  const sheep = makeSheep(scene,
+    Math.max(homes.sheep.length, SERVER_WILDLIFE_HOMES.sheep.length), resources);
+  const rabbits = makeRabbits(scene,
+    Math.max(homes.rabbits.length, SERVER_WILDLIFE_HOMES.rabbits.length), resources);
   const meshes = [...birds.meshes, ...sheep.meshes, ...rabbits.meshes];
   const position = new THREE.Vector3();
   const scale = new THREE.Vector3();
@@ -338,32 +496,37 @@ export function createFauna(scene, terrainHeight, options = {}) {
   const wingPose = new THREE.Quaternion();
   const vertical = new THREE.Vector3(0, 1, 0);
   const forward = new THREE.Vector3(0, 0, 1);
+  const life = new Map(wildlifeTargetsAt(SERVER_WILDLIFE_HOMES, 0).map((target) =>
+    [target.id, { alive: true, deathAge: 0, deathTarget: null }]));
+  let targets = [];
+  let activeVisual = null;
   let callClock = 0;
   let nextCall = 19;
   let callSerial = 0;
   let disposed = false;
 
-  const coastalRadius = options.coastalRadius || (() => 0);
-  const isRoad = options.isRoad || (() => false);
-  const isBlocked = options.isBlocked || (() => false);
-  const isLake = options.isLake || (() => false);
-
-  function safeWander(home, proposedX, proposedZ, radius) {
-    if (!Number.isFinite(proposedX) || !Number.isFinite(proposedZ)
-      || coastalRadius(proposedX, proposedZ) >= 0.9
-      || isRoad(proposedX, proposedZ, 3 + radius)
-      || isLake(proposedX, proposedZ, LAKE_BANK_CLEARANCE + radius)
-      || isBlocked(proposedX, proposedZ, radius)) return home;
-    const height = terrainHeight(proposedX, proposedZ);
-    if (!Number.isFinite(height) || height < 18) return home;
-    return { x: proposedX, z: proposedZ, y: height };
-  }
-
   function setInstance(mesh, index, x, y, z, quaternion, sx, sy, sz) {
+    if (activeVisual && !activeVisual.state.alive) {
+      const collapse = clamp(activeVisual.state.deathAge / 1.3, 0, 1);
+      if (activeVisual.kind === 'bird') {
+        y += (activeVisual.groundY + 0.15 - y) * collapse * collapse;
+      }
+      else y = activeVisual.groundY + (y - activeVisual.groundY) * (1 - collapse * 0.78);
+      const vanish = Math.max(0.001, 1 - collapse * collapse * collapse);
+      sx *= vanish;
+      sy *= vanish * (1 - collapse * 0.55);
+      sz *= vanish;
+    }
     position.set(x, y, z);
     scale.set(sx, sy, sz);
     matrix.compose(position, quaternion, scale);
     mesh.setMatrixAt(index, matrix);
+  }
+
+  function inVisualRange(target, kind, cameraX, cameraZ) {
+    if (!Number.isFinite(cameraX) || !Number.isFinite(cameraZ)) return true;
+    const limit = VISUAL_RANGE[kind];
+    return (target.x - cameraX) ** 2 + (target.z - cameraZ) ** 2 < limit * limit;
   }
 
   function update(dt, elapsed, weather = 'mist', context = {}) {
@@ -373,21 +536,39 @@ export function createFauna(scene, terrainHeight, options = {}) {
     const storm = weather === 'storm';
     const rain = weather === 'rain';
     const birdCount = storm ? STORM_BIRD_COUNT : BIRD_COUNT;
-    const rabbitCount = storm ? 0 : rain ? Math.ceil(homes.rabbits.length / 2) : homes.rabbits.length;
     const playerX = finite(context.playerX, Infinity);
     const playerZ = finite(context.playerZ, Infinity);
+    const targetHomes = context.multiplayer ? SERVER_WILDLIFE_HOMES : homes;
+    const rabbitCount = storm ? 0 : rain
+      ? Math.ceil(targetHomes.rabbits.length / 2) : targetHomes.rabbits.length;
+    targets = wildlifeTargetsAt(targetHomes, time, weather,
+      context.multiplayer
+        ? { multiplayer: true, terrainHeight }
+        : { ...options, terrainHeight, playerX, playerZ });
+    // A killed bird falls where it was hit rather than continuing its orbit.
+    for (let i = 0; i < targets.length; i++) {
+      const deathTarget = life.get(targets[i].id)?.deathTarget;
+      if (deathTarget) targets[i] = { ...targets[i], ...deathTarget };
+    }
+    for (const state of life.values()) if (!state.alive) state.deathAge += step;
     let nearestBirdDistance = Infinity;
+    let visibleBirds = 0;
     for (let i = 0; i < birdCount; i++) {
       const bird = birds.birds[i];
-      const flock = BIRD_FLOCKS[bird.flock];
+      const target = targets[i];
+      const state = life.get(target.id);
+      const distance = Math.hypot(target.x - playerX, target.z - playerZ);
+      if (state.alive) nearestBirdDistance = Math.min(nearestBirdDistance, distance);
+      if (!inVisualRange(target, 'bird', playerX, playerZ)
+        || (!state.alive && state.deathAge > 1.3)) continue;
+      const slot = visibleBirds++;
+      activeVisual = { kind: 'bird', state,
+        groundY: state.alive ? 0
+          : Math.max(0, finite(terrainHeight(target.x, target.z), 0)) };
       const speed = bird.speed * (storm ? 1.48 : rain ? 1.2 : 1);
       const angle = bird.phase + time * speed;
-      const aspect = 0.68 + bird.rank * 0.08;
-      const x = flock.x + Math.cos(angle) * bird.radius;
-      const z = flock.z + Math.sin(angle) * bird.radius * aspect;
-      const y = flock.y - (storm ? 4.5 : 0) + Math.sin(time * 0.78 + bird.phase) * 1.5;
-      const distance = Math.hypot(x - playerX, z - playerZ);
-      nearestBirdDistance = Math.min(nearestBirdDistance, distance);
+      const aspect = 0.68 + bird.rank * 0.025;
+      const { x, y, z } = target;
       const heading = Math.atan2(-Math.sin(angle) * bird.radius,
         Math.cos(angle) * bird.radius * aspect);
       const forwardX = Math.sin(heading);
@@ -396,63 +577,67 @@ export function createFauna(scene, terrainHeight, options = {}) {
       bank.setFromAxisAngle(forward, Math.sin(angle * 1.2 + bird.phase) * (storm ? 0.23 : 0.12));
       pose.copy(yaw).multiply(bank);
       const size = bird.size;
-      setInstance(birds.body, i, x, y, z, pose, 0.45 * size, 0.23 * size, 0.59 * size);
-      setInstance(birds.head, i, x + forwardX * 0.48 * size,
+      setInstance(birds.body, slot, x, y, z, pose, 0.45 * size, 0.23 * size, 0.59 * size);
+      setInstance(birds.head, slot, x + forwardX * 0.48 * size,
         y + 0.1 * size, z + forwardZ * 0.48 * size,
         pose, 0.19 * size, 0.18 * size, 0.19 * size);
-      setInstance(birds.beaks, i, x + forwardX * 0.71 * size,
+      setInstance(birds.beaks, slot, x + forwardX * 0.71 * size,
         y + 0.075 * size, z + forwardZ * 0.71 * size,
         pose, size, size, size);
-      setInstance(birds.tails, i, x, y, z, pose, size, size, size);
+      setInstance(birds.tails, slot, x, y, z, pose, size, size, size);
       const wingBeat = (storm ? 0.32 : 0.16)
         + Math.sin(time * (storm ? 7.4 : 4.3) + bird.phase * 2) * (storm ? 0.37 : 0.22);
       flap.setFromAxisAngle(forward, wingBeat);
       wingPose.copy(pose).multiply(flap);
-      setInstance(birds.wings, i, x, y + 0.035, z,
+      setInstance(birds.wings, slot, x, y + 0.035, z,
         wingPose, size, size, size);
       flap.setFromAxisAngle(forward, -wingBeat);
       wingPose.copy(pose).multiply(flap);
-      setInstance(birds.leftWings, i, x, y + 0.035, z,
+      setInstance(birds.leftWings, slot, x, y + 0.035, z,
         wingPose, size, size, size);
     }
     for (const mesh of birds.meshes) {
-      mesh.count = birdCount;
+      mesh.count = visibleBirds;
       mesh.instanceMatrix.needsUpdate = true;
     }
 
-    for (let i = 0; i < homes.sheep.length; i++) {
-      const home = homes.sheep[i];
+    let visibleSheep = 0;
+    for (let i = 0; i < targetHomes.sheep.length; i++) {
+      const target = targets[BIRD_COUNT + i];
+      const state = life.get(target.id);
+      if (!inVisualRange(target, 'sheep', playerX, playerZ)
+        || (!state.alive && state.deathAge > 1.3)) continue;
+      const slot = visibleSheep++;
+      activeVisual = { kind: 'sheep', state: life.get(target.id),
+        groundY: target.y - 0.7 };
       const phase = i * 2.17;
-      const wander = storm ? 0.45 : 1;
-      const next = safeWander(home,
-        home.x + Math.sin(time * 0.12 + phase) * 2.2 * wander,
-        home.z + Math.cos(time * 0.105 + phase * 1.23) * 1.7 * wander, 1);
-      const { x, y, z } = next;
+      const { x, z } = target;
+      const y = target.y - 0.7;
       const heading = phase + Math.sin(time * 0.09 + phase) * 0.28;
       const forwardX = Math.sin(heading);
       const forwardZ = Math.cos(heading);
       yaw.setFromAxisAngle(vertical, heading);
-      setInstance(sheep.wool, i, x, y + 0.70, z, yaw, 1, 1, 1);
+      setInstance(sheep.wool, slot, x, y + 0.70, z, yaw, 1, 1, 1);
       const grazing = storm ? 0.05 : (Math.sin(time * 0.62 + phase) + 1) * 0.13;
       const headY = y + 0.91 - grazing;
       const hx = x + forwardX * 0.63;
       const hz = z + forwardZ * 0.63;
-      setInstance(sheep.heads, i, hx, headY, hz, yaw, 0.22, 0.25, 0.34);
-      setInstance(sheep.muzzles, i, hx + forwardX * 0.24,
+      setInstance(sheep.heads, slot, hx, headY, hz, yaw, 0.22, 0.25, 0.34);
+      setInstance(sheep.muzzles, slot, hx + forwardX * 0.24,
         headY - 0.08, hz + forwardZ * 0.24, yaw, 0.17, 0.13, 0.19);
-      setInstance(sheep.noses, i, hx + forwardX * 0.42,
+      setInstance(sheep.noses, slot, hx + forwardX * 0.42,
         headY - 0.095, hz + forwardZ * 0.42, yaw, 0.09, 0.05, 0.04);
-      setInstance(sheep.forelocks, i, hx - forwardX * 0.07,
+      setInstance(sheep.forelocks, slot, hx - forwardX * 0.07,
         headY + 0.24, hz - forwardZ * 0.07, yaw, 0.17, 0.13, 0.17);
-      setInstance(sheep.tails, i, x - forwardX * 0.70,
+      setInstance(sheep.tails, slot, x - forwardX * 0.70,
         y + 0.83, z - forwardZ * 0.70, yaw, 0.13, 0.14, 0.16);
       for (let leg = 0; leg < 4; leg++) {
         const lateral = leg % 2 ? 0.30 : -0.30;
         const longitudinal = leg < 2 ? -0.39 : 0.39;
         const lx = x + forwardZ * lateral + forwardX * longitudinal;
         const lz = z - forwardX * lateral + forwardZ * longitudinal;
-        setInstance(sheep.legs, i * 4 + leg, lx, y, lz, yaw, 1, 1, 1);
-        setInstance(sheep.hooves, i * 4 + leg,
+        setInstance(sheep.legs, slot * 4 + leg, lx, y, lz, yaw, 1, 1, 1);
+        setInstance(sheep.hooves, slot * 4 + leg,
           lx + forwardX * 0.04, y + 0.07, lz + forwardZ * 0.04,
           yaw, 1, 1, 1);
       }
@@ -460,21 +645,35 @@ export function createFauna(scene, terrainHeight, options = {}) {
         const side = ear ? 1 : -1;
         const ex = hx + forwardZ * side * 0.30 - forwardX * 0.08;
         const ez = hz - forwardX * side * 0.30 - forwardZ * 0.08;
-        setInstance(sheep.ears, i * 2 + ear, ex, headY + 0.13, ez,
+        setInstance(sheep.ears, slot * 2 + ear, ex, headY + 0.13, ez,
           yaw, 0.18, 0.075, 0.12);
-        setInstance(sheep.eyes, i * 2 + ear,
+        setInstance(sheep.eyes, slot * 2 + ear,
           hx + forwardZ * side * 0.20 + forwardX * 0.12,
           headY + 0.09,
           hz - forwardX * side * 0.20 + forwardZ * 0.12,
           yaw, 0.042, 0.042, 0.037);
       }
     }
-    for (const mesh of sheep.meshes) mesh.instanceMatrix.needsUpdate = true;
+    for (const mesh of sheep.meshes) {
+      mesh.count = mesh === sheep.legs || mesh === sheep.hooves
+        ? visibleSheep * 4 : mesh === sheep.ears || mesh === sheep.eyes
+          ? visibleSheep * 2 : visibleSheep;
+      mesh.instanceMatrix.needsUpdate = true;
+    }
 
+    let visibleRabbits = 0;
     for (let i = 0; i < rabbitCount; i++) {
-      const home = homes.rabbits[i];
+      const home = targetHomes.rabbits[i];
+      const target = targets[BIRD_COUNT + targetHomes.sheep.length + i];
+      const state = life.get(target.id);
+      if (!inVisualRange(target, 'rabbit', playerX, playerZ)
+        || (!state.alive && state.deathAge > 1.3)) continue;
+      const slot = visibleRabbits++;
+      activeVisual = { kind: 'rabbit', state: life.get(target.id),
+        groundY: target.y - 0.36 };
       const phase = i * 2.53;
-      const playerKnown = Number.isFinite(playerX) && Number.isFinite(playerZ);
+      const playerKnown = !context.multiplayer
+        && Number.isFinite(playerX) && Number.isFinite(playerZ);
       const dx = playerKnown ? home.x - playerX : 0;
       const dz = playerKnown ? home.z - playerZ : 0;
       const playerDistance = playerKnown ? Math.hypot(dx, dz) : Infinity;
@@ -483,28 +682,26 @@ export function createFauna(scene, terrainHeight, options = {}) {
         ? dx / playerDistance * flee : 0;
       const escapeZ = Number.isFinite(playerDistance) && playerDistance > 0.01
         ? dz / playerDistance * flee : 0;
-      const next = safeWander(home,
-        home.x + Math.sin(time * 0.37 + phase) * 1.25 + escapeX,
-        home.z + Math.cos(time * 0.32 + phase) * 1.15 + escapeZ, 0.35);
-      const { x, y, z } = next;
+      const { x, z } = target;
       const heading = Math.atan2(escapeX + Math.cos(time * 0.37 + phase),
         escapeZ - Math.sin(time * 0.32 + phase));
       const forwardX = Math.sin(heading);
       const forwardZ = Math.cos(heading);
       yaw.setFromAxisAngle(vertical, heading);
       const hop = Math.max(0, Math.sin(time * 6.5 + phase)) * (flee > 0 ? 0.11 : 0.04);
-      setInstance(rabbits.body, i, x, y + 0.28 + hop, z, yaw, 1, 1, 1);
+      const y = target.y - 0.36 - hop;
+      setInstance(rabbits.body, slot, x, y + 0.28 + hop, z, yaw, 1, 1, 1);
       const hx = x + forwardX * 0.32;
       const hz = z + forwardZ * 0.32;
-      setInstance(rabbits.head, i, hx, y + 0.40 + hop, hz,
+      setInstance(rabbits.head, slot, hx, y + 0.40 + hop, hz,
         yaw, 0.19, 0.18, 0.19);
-      setInstance(rabbits.noses, i, hx + forwardX * 0.18,
+      setInstance(rabbits.noses, slot, hx + forwardX * 0.18,
         y + 0.35 + hop, hz + forwardZ * 0.18,
         yaw, 0.045, 0.035, 0.038);
-      setInstance(rabbits.muzzles, i, hx + forwardX * 0.145,
+      setInstance(rabbits.muzzles, slot, hx + forwardX * 0.145,
         y + 0.335 + hop, hz + forwardZ * 0.145,
         yaw, 1, 1, 1);
-      setInstance(rabbits.tails, i, x - forwardX * 0.43,
+      setInstance(rabbits.tails, slot, x - forwardX * 0.43,
         y + 0.36 + hop, z - forwardZ * 0.43,
         yaw, 0.13, 0.13, 0.13);
       for (let ear = 0; ear < 2; ear++) {
@@ -514,27 +711,27 @@ export function createFauna(scene, terrainHeight, options = {}) {
         flap.setFromAxisAngle(forward, side * 0.17
           + Math.sin(time * 1.7 + phase) * 0.035);
         wingPose.copy(yaw).multiply(flap);
-        setInstance(rabbits.ears, i * 2 + ear, ex, y + 0.68 + hop, ez,
+        setInstance(rabbits.ears, slot * 2 + ear, ex, y + 0.68 + hop, ez,
           wingPose, 0.073, 0.24, 0.048);
-        setInstance(rabbits.innerEars, i * 2 + ear,
+        setInstance(rabbits.innerEars, slot * 2 + ear,
           ex + forwardX * 0.042, y + 0.69 + hop, ez + forwardZ * 0.042,
           wingPose, 0.043, 0.17, 0.018);
-        setInstance(rabbits.eyes, i * 2 + ear,
+        setInstance(rabbits.eyes, slot * 2 + ear,
           hx + forwardZ * side * 0.174 + forwardX * 0.055,
           y + 0.455 + hop,
           hz - forwardX * side * 0.174 + forwardZ * 0.055,
           yaw, 0.031, 0.032, 0.030);
-        setInstance(rabbits.glints, i * 2 + ear,
+        setInstance(rabbits.glints, slot * 2 + ear,
           hx + forwardZ * side * 0.185 + forwardX * 0.075,
           y + 0.47 + hop,
           hz - forwardX * side * 0.185 + forwardZ * 0.075,
           yaw, 0.006, 0.006, 0.006);
-        setInstance(rabbits.paws, i * 4 + ear,
+        setInstance(rabbits.paws, slot * 4 + ear,
           x + forwardZ * side * 0.14 + forwardX * 0.28,
           y + 0.08 + hop,
           z - forwardX * side * 0.14 + forwardZ * 0.28,
           yaw, 0.075, 0.09, 0.16);
-        setInstance(rabbits.paws, i * 4 + 2 + ear,
+        setInstance(rabbits.paws, slot * 4 + 2 + ear,
           x + forwardZ * side * 0.18 - forwardX * 0.22,
           y + 0.10 + hop,
           z - forwardX * side * 0.18 - forwardZ * 0.22,
@@ -544,10 +741,11 @@ export function createFauna(scene, terrainHeight, options = {}) {
     for (const mesh of rabbits.meshes) {
       const paired = mesh === rabbits.ears || mesh === rabbits.innerEars
         || mesh === rabbits.eyes || mesh === rabbits.glints;
-      mesh.count = mesh === rabbits.paws ? rabbitCount * 4
-        : paired ? rabbitCount * 2 : rabbitCount;
+      mesh.count = mesh === rabbits.paws ? visibleRabbits * 4
+        : paired ? visibleRabbits * 2 : visibleRabbits;
       mesh.instanceMatrix.needsUpdate = true;
     }
+    activeVisual = null;
 
     // Calls are visual-system cues for the game's own synthesizer. They are
     // intentionally infrequent and never occur in the thunderstorm.
@@ -566,6 +764,33 @@ export function createFauna(scene, terrainHeight, options = {}) {
   return {
     update,
     homes,
+    getTargets() {
+      return targets.map((target) => {
+        const alive = life.get(target.id)?.alive ?? false;
+        return { ...target, alive, active: target.active && alive };
+      });
+    },
+    setAnimalAlive(id, alive) {
+      const state = life.get(id);
+      if (!state || typeof alive !== 'boolean') return false;
+      if (state.alive !== alive) {
+        state.deathTarget = alive ? null
+          : (() => {
+            const target = targets.find((candidate) => candidate.id === id);
+            return target ? { x: target.x, y: target.y, z: target.z } : null;
+          })();
+        state.alive = alive;
+        state.deathAge = 0;
+      }
+      return true;
+    },
+    resetAnimals() {
+      for (const state of life.values()) {
+        state.alive = true;
+        state.deathAge = 0;
+        state.deathTarget = null;
+      }
+    },
     dispose() {
       if (disposed) return;
       disposed = true;

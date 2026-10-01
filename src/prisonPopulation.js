@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PRISON_LAYOUT } from './setDressing.js';
+import { createNpcAttackPresentation } from './npcAttackPresentation.js';
 
 // The former annex has a small staffed holding wing. These occupants are
 // ambient island residents with no associated objectives or plot state.
@@ -62,6 +63,9 @@ const parts = [
   { id: 'pockets', geometry: 'sphere', material: 'cloth', multiplicity: 2 },
   { id: 'buttons', geometry: 'sphere', material: 'metal', multiplicity: 3 },
   { id: 'cuffs', geometry: 'cylinder', material: 'cloth', multiplicity: 2 },
+  { id: 'gunFrame', geometry: 'box', material: 'gunmetal', multiplicity: 1 },
+  { id: 'gunBarrel', geometry: 'box', material: 'gunmetal', multiplicity: 1 },
+  { id: 'gunGrip', geometry: 'box', material: 'gunwood', multiplicity: 1 },
 ];
 
 function colorFor(part, person, index) {
@@ -78,10 +82,12 @@ function colorFor(part, person, index) {
   if (part === 'badge') return 0xb9a474;
   if (part === 'buttons') return guard ? 0x9e9578 : 0x5b5c55;
   if (part === 'eyes') return 0x332c27;
+  if (part === 'gunFrame' || part === 'gunBarrel') return guard ? 0x414944 : 0x4d514d;
+  if (part === 'gunGrip') return guard ? 0x72563e : 0x65513f;
   return 0x292f30;
 }
 
-function posePart(id, side, guard, walk, breath) {
+function posePart(id, side, guard, walk, breath, alerted = false) {
   const swing = Math.sin(walk) * (guard ? 0.018 : 0.035);
   switch (id) {
     case 'torso': return [0, breath, 0, 1, 1, 0.82, 0];
@@ -89,9 +95,13 @@ function posePart(id, side, guard, walk, breath) {
     case 'belt': return [0, 0.82 + breath, 0, 0.285, 0.07, 0.25, 0];
     case 'legs': return [side * 0.14, 0.47, 0, 0.112, 0.75, 0.111, side * swing];
     case 'boots': return [side * 0.14, 0.105, -0.055, 0.128, 0.105, 0.205, 0];
-    case 'arms': return [side * 0.34, 1.115 + breath, 0, 0.093, 0.515, 0.093, side * (0.12 + swing)];
+    case 'arms': return alerted && side > 0
+      ? [0.34, 1.2 + breath, -0.18, 0.093, 0.515, 0.093, 0]
+      : [side * 0.34, 1.115 + breath, 0, 0.093, 0.515, 0.093, side * (0.12 + swing)];
     case 'sleeveSeams': return [side * 0.287, 1.385 + breath, 0, 0.095, 0.072, 0.105, side * 0.1];
-    case 'hands': return [side * 0.39, 0.795 + breath, -0.025, 0.071, 0.093, 0.065, 0];
+    case 'hands': return alerted && side > 0
+      ? [0.37, 1.05 + breath, -0.4, 0.071, 0.093, 0.065, 0]
+      : [side * 0.39, 0.795 + breath, -0.025, 0.071, 0.093, 0.065, 0];
     case 'neck': return [0, 1.555 + breath, 0, 0.075, 0.15, 0.072, 0];
     case 'head': return [0, 1.708 + breath, 0, 0.158, 0.186, 0.144, 0];
     case 'ears': return [side * 0.153, 1.697 + breath, 0, 0.025, 0.044, 0.026, 0];
@@ -107,6 +117,14 @@ function posePart(id, side, guard, walk, breath) {
     case 'buttons': return [0.025, 1.31 - (side + 1) * 0.117 + breath, -0.247,
       0.014, 0.014, 0.008, 0];
     case 'cuffs': return [side * 0.385, 0.87 + breath, -0.01, 0.103, 0.045, 0.104, 0];
+    case 'gunFrame': return [0.38, alerted ? 1.11 : 0.78,
+      alerted ? -0.43 : -0.07, guard ? 0.14 : 0.15,
+      0.12, guard ? 0.36 : 0.22, 0];
+    case 'gunBarrel': return [0.38, alerted ? 1.13 : 0.8,
+      alerted ? (guard ? -0.75 : -0.64) : (guard ? -0.39 : -0.27),
+      0.065, 0.07, guard ? 0.42 : 0.22, 0];
+    case 'gunGrip': return [0.38, alerted ? 0.99 : 0.65,
+      alerted ? -0.31 : 0.015, 0.09, 0.2, 0.11, 0];
     default: throw new Error(`Unknown prison population part: ${id}`);
   }
 }
@@ -285,6 +303,7 @@ export function createPrisonPopulation(scene, terrainHeight) {
   root.name = 'Prison holding wing population';
   scene.add(root);
   const geometry = {
+    box: new THREE.BoxGeometry(1, 1, 1),
     coat: coatGeometry(),
     lapel: lapelGeometry(),
     sphere: new THREE.SphereGeometry(1, 12, 9),
@@ -301,11 +320,21 @@ export function createPrisonPopulation(scene, terrainHeight) {
     skin: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
     hair: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.91 }),
     metal: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.58, metalness: 0.45 }),
+    gunmetal: new THREE.MeshStandardMaterial({ color: 0xffffff,
+      roughness: 0.47, metalness: 0.65 }),
+    gunwood: new THREE.MeshStandardMaterial({ color: 0xffffff,
+      roughness: 0.84, metalness: 0.02 }),
   };
   const people = PRISON_OCCUPANTS.map((person, index) => ({
     ...person, baseY: terrainHeight(person.x, person.z) + 0.15,
+    spawnX: person.x, spawnZ: person.z, spawnHeading: person.heading,
     xNow: person.x, zNow: person.z, index,
+    health: 100, maxHealth: 100, dead: false, alerted: false,
+    collapse: 0, authoritativePosition: false, attackFaceRemaining: 0,
+    attackTarget: null,
   }));
+  const peopleById = new Map(people.map((person) => [person.id, person]));
+  const cues = createNpcAttackPresentation(root);
   const fixtures = addCellFixtures(root, terrainHeight);
   const meshes = parts.map((part) => {
     const mesh = new THREE.InstancedMesh(geometry[part.geometry], partMaterials[part.material],
@@ -333,6 +362,7 @@ export function createPrisonPopulation(scene, terrainHeight) {
   for (const { mesh } of meshes) mesh.boundingSphere = spatial;
   const viewProjection = new THREE.Matrix4();
   const viewFrustum = new THREE.Frustum();
+  let previousElapsed = null;
 
   function posesMayRender(camera, shadowLight) {
     // Without both views, retain the original full update. The sun is the
@@ -355,13 +385,21 @@ export function createPrisonPopulation(scene, terrainHeight) {
   }
 
   function update(elapsed = 0, context = {}) {
+    const dt = Number.isFinite(context.dt) ? Math.max(0, Math.min(context.dt, 0.1))
+      : previousElapsed == null ? 0 : Math.max(0, Math.min(elapsed - previousElapsed, 0.1));
+    previousElapsed = elapsed;
+    cues.update(dt);
     const storm = context.weather === 'storm' || context.storm === true;
     for (const person of people) {
+      person.collapse = person.dead ? Math.min(1, person.collapse + dt * 2.9)
+        : Math.max(0, person.collapse - dt * 3.4);
+      person.attackFaceRemaining = Math.max(0, person.attackFaceRemaining - dt);
       const guard = person.kind === 'guard';
       const phase = elapsed * (guard ? 0.47 : 0.62) + person.index * 1.73;
       // Detainees remain in their own barred bays. Guards shift weight but
       // never drift into the open gate, old ledger, or traversal corridor.
-      const pace = guard ? 0 : Math.sin(phase) * (person.index % 3 === 0 ? 0.48 : 0.24);
+      const pace = guard || person.dead || person.authoritativePosition ? 0
+        : Math.sin(phase) * (person.index % 3 === 0 ? 0.48 : 0.24);
       person.xNow = person.x + pace;
       person.zNow = person.z;
     }
@@ -370,17 +408,33 @@ export function createPrisonPopulation(scene, terrainHeight) {
       for (const person of people) {
         const guard = person.kind === 'guard';
         const phase = elapsed * 0.7 + person.index * 1.11;
-        const breath = Math.sin(phase) * (storm && guard ? 0.009 : 0.006);
+        const breath = person.dead ? 0
+          : Math.sin(phase) * (storm && guard ? 0.009 : 0.006);
         const looking = ['head', 'hair', 'ears', 'nose', 'eyes', 'cap', 'brim', 'capBand'].includes(part.id);
-        const yaw = person.heading + Math.sin(phase * 0.4) * (guard ? 0.035 : 0.075)
-          + (looking ? Math.sin(phase * 0.55) * (guard ? 0.14 : 0.21) : 0);
+        const faceTarget = person.attackFaceRemaining > 0 ? person.attackTarget
+          : Number.isFinite(context.playerX) && Number.isFinite(context.playerZ)
+            ? { x: context.playerX, z: context.playerZ } : null;
+        const faceYaw = faceTarget
+          ? Math.atan2(faceTarget.x - person.xNow, faceTarget.z - person.zNow)
+          : person.heading;
+        const yaw = person.dead ? person.heading : person.alerted ? faceYaw
+          : person.heading + Math.sin(phase * 0.4) * (guard ? 0.035 : 0.075)
+            + (looking ? Math.sin(phase * 0.55) * (guard ? 0.14 : 0.21) : 0);
         const c = Math.cos(yaw), s = Math.sin(yaw);
+        const fall = person.collapse * 1.43;
+        const cosFall = Math.cos(fall), sinFall = Math.sin(fall);
         for (let side = 0; side < part.multiplicity; side++) {
           const sign = part.id === 'buttons' ? side - 1 : side === 0 ? -1 : 1;
-          const [lx, ly, lz, sx, sy, sz, lean] = posePart(part.id, sign, guard, phase, breath);
-          dummy.position.set(person.xNow + lx * c + lz * s, person.baseY + ly,
-            person.zNow - lx * s + lz * c);
-          dummy.rotation.set(0, yaw, lean);
+          const [lx, ly, lz, sx, sy, sz, lean] = posePart(part.id, sign,
+            guard, phase, breath, person.alerted && !person.dead);
+          const fallenY = ly * cosFall - lz * sinFall;
+          const fallenZ = ly * sinFall + lz * cosFall;
+          dummy.position.set(person.xNow + lx * c + fallenZ * s,
+            person.baseY + fallenY,
+            person.zNow - lx * s + fallenZ * c);
+          dummy.rotation.set(fall + (part.id === 'arms' && sign > 0
+            && person.alerted && !person.dead ? 0.75 : 0),
+          yaw, lean * (1 - person.collapse), 'YXZ');
           dummy.scale.set(part.id === 'torso' ? sx * (0.93 + (person.index % 4) * 0.045)
             : part.id === 'lapels' ? sx * sign : sx,
             sy, sz);
@@ -396,6 +450,7 @@ export function createPrisonPopulation(scene, terrainHeight) {
     let best = null;
     let bestDistance = maxDistance;
     for (const person of people) {
+      if (person.dead) continue;
       const distance = Math.hypot(x - person.xNow, z - person.zNow);
       if (distance <= bestDistance) {
         bestDistance = distance;
@@ -408,14 +463,14 @@ export function createPrisonPopulation(scene, terrainHeight) {
   }
 
   function collides(x, z, radius = 0.35) {
-    return people.some((person) => person.kind === 'guard'
+    return people.some((person) => person.kind === 'guard' && !person.dead
       && Math.hypot(x - person.xNow, z - person.zNow) < GUARD_RADIUS + radius)
       || fixtures.colliders.some((rectangle) => fixtureDistance(x, z, rectangle) < radius);
   }
 
   function blocksMove(fromX, fromZ, toX, toZ, radius = 0.35) {
     const blocksGuard = people.some((person) => {
-      if (person.kind !== 'guard') return false;
+      if (person.kind !== 'guard' || person.dead) return false;
       const before = Math.hypot(fromX - person.xNow, fromZ - person.zNow);
       const after = Math.hypot(toX - person.xNow, toZ - person.zNow);
       return after < GUARD_RADIUS + radius && after < before - 0.00001;
@@ -427,7 +482,71 @@ export function createPrisonPopulation(scene, terrainHeight) {
     });
   }
 
+  function getCombatTargets() {
+    return people.map((person) => ({ id: person.id, kind: person.kind,
+      x: person.xNow, y: person.baseY + 0.9, z: person.zNow,
+      radius: 0.65, alive: !person.dead, health: person.health,
+      maxHealth: person.maxHealth }));
+  }
+
+  function setCombatStates(states) {
+    for (const state of Array.isArray(states) ? states : Object.values(states || {})) {
+      const person = peopleById.get(state?.id);
+      if (!person) continue;
+      if (Number.isFinite(state.x) && Number.isFinite(state.z)) {
+        person.x = state.x;
+        person.z = state.z;
+        person.baseY = Number.isFinite(state.y)
+          ? state.y + 0.15 : terrainHeight(state.x, state.z) + 0.15;
+        person.authoritativePosition = true;
+      }
+      if (Number.isFinite(state.heading)) person.heading = state.heading;
+      if (Number.isFinite(state.health)) person.health = Math.max(0, state.health);
+      if (Number.isFinite(state.maxHealth)) person.maxHealth = Math.max(1, state.maxHealth);
+      if (typeof state.dead === 'boolean') person.dead = state.dead;
+      else if (Number.isFinite(state.health)) person.dead = state.health <= 0;
+      if (typeof state.alerted === 'boolean') person.alerted = state.alerted;
+      if ('targetId' in state) person.targetId = state.targetId;
+    }
+  }
+
+  function resetCombatStates() {
+    for (const person of people) {
+      person.x = person.xNow = person.spawnX;
+      person.z = person.zNow = person.spawnZ;
+      person.heading = person.spawnHeading;
+      person.baseY = terrainHeight(person.x, person.z) + 0.15;
+      person.health = person.maxHealth = 100;
+      person.dead = person.alerted = false;
+      person.authoritativePosition = false;
+      person.collapse = 0;
+      person.targetId = null;
+      person.attackFaceRemaining = 0;
+    }
+    update(previousElapsed || 0, { dt: 0 });
+  }
+
+  function showCombatHit(id) {
+    const person = peopleById.get(id);
+    if (person) cues.showHit({ x: person.xNow, y: person.baseY + 1.06,
+      z: person.zNow });
+  }
+
+  function showAttack(id, target, { noProjectile = false } = {}) {
+    const person = peopleById.get(id);
+    if (!person || person.dead) return;
+    person.alerted = true;
+    if (target && Number.isFinite(target.x) && Number.isFinite(target.z)) {
+      person.attackTarget = target;
+      person.attackFaceRemaining = 0.75;
+    }
+    cues.showAttack(noProjectile ? 'guard_muzzle' : 'guard',
+      { x: person.xNow, y: person.baseY + (person.kind === 'guard' ? 1.32 : 1.25),
+        z: person.zNow }, target);
+  }
+
   function dispose() {
+    cues.dispose();
     scene.remove(root);
     for (const { mesh } of meshes) mesh.dispose();
     for (const item of Object.values(geometry)) item.dispose();
@@ -441,5 +560,7 @@ export function createPrisonPopulation(scene, terrainHeight) {
   }
 
   update(0);
-  return { group: root, occupants: people, update, nearestPerson, collides, blocksMove, dispose };
+  return { group: root, occupants: people, update, nearestPerson, collides,
+    blocksMove, getCombatTargets, setCombatStates, resetCombatStates,
+    showCombatHit, showAttack, dispose };
 }

@@ -1,0 +1,36 @@
+#private-room-panel { margin: .5rem 0 1rem; border: 1px solid #b7c5bb4a; background: #0b1e24c9; }
+#private-room-panel summary { list-style: none; cursor: pointer; padding: .85rem 1rem; color: #e4c993; font-size: .72rem; font-weight: 600; letter-spacing: .16em; }
+#private-room-panel summary::-webkit-details-marker { display: none; }
+#private-room-panel summary::before { content: '▸'; margin-right: .6rem; }
+#private-room-panel[open] summary::before { content: '▾'; }
+#room-summary-detail { float: right; color: #bfd0cb; font-size: .65rem; }
+.room-content { padding: .2rem 1rem 1rem; border-top: 1px solid #b7c5bb35; }
+.room-content label { display: block; margin: .7rem 0 .3rem; color: #b8c9c5; font-size: .64rem; font-weight: 600; letter-spacing: .13em; }
+.room-content input, .room-content select { width: 100%; min-width: 0; padding: .58rem .7rem; border: 1px solid #9fb8af69; border-radius: 2px; color: #eef3eb; background: #10282f; }
+.room-content input::placeholder { color: #afc1b8; }
+.room-content button { min-height: 39px; padding: .54rem .8rem; border: 1px solid #d3c19695; color: #f0ead9; background: #213b3c; font-size: .7rem; font-weight: 600; letter-spacing: .08em; }
+.room-content button:hover:not(:disabled) { background: #3b5a55; }
+.room-content button:disabled { opacity: .55; cursor: wait; }
+.room-actions { margin-top: .5rem; }
+.room-actions button { width: 100%; margin-top: .55rem; }
+.room-join-row, .room-code-row { display: flex; gap: .5rem; align-items: center; margin-top: .7rem; }
+.room-join-row input { flex: 1; text-transform: uppercase; letter-spacing: .16em; }
+.room-join-row button { flex: 0 0 auto; }
+#room-resume, #room-leave { width: 100%; margin-top: .7rem; }
+.room-help, .room-status { color: #a6bab3; font-size: .68rem; line-height: 1.4; }
+.room-status { min-height: 1em; margin: .6rem 0 0; color: #e7c98e; }
+.room-code-row { justify-content: space-between; }
+.room-code-row strong { color: #e8d49e; letter-spacing: .16em; }
+.room-mode-label { margin: .6rem 0; color: #e1e9e2; font-size: .75rem; }
+#room-player-list { margin: .6rem 0; padding: 0; list-style-position: inside; columns: 2; }
+#room-player-list li { padding: .3rem 0; color: #e7eee8; font-size: .72rem; break-inside: avoid; }
+#room-player-list small { display: block; margin-left: 1.25rem; color: #d2b687; }
+#private-room-badge { position: absolute; left: 26px; top: 88px; padding: .36rem .6rem; border: 1px solid #d6c39770; color: #e5d09b; background: #0a1a20bf; font-size: .65rem; letter-spacing: .1em; }
+.screen-card { max-height: min(94vh, 980px); overflow-y: auto; }
+@media (max-width: 780px) {
+  #private-room-badge { left: 10px; top: 75px; font-size: .58rem; }
+  .room-content { padding: .2rem .7rem .8rem; }
+  #room-player-list { columns: 1; }
+  .room-join-row { flex-wrap: wrap; }
+  .room-join-row button { flex: 1 1 100%; }
+}

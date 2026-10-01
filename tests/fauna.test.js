@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { createWorld } from '../src/world.js';
+import { createWorld, islandTerrainHeightAt } from '../src/world.js';
 import { isRoad } from '../src/roads.js';
-import { createFauna, planCoastalFauna } from '../src/fauna.js';
+import { createFauna, planCoastalFauna, SERVER_WILDLIFE_HOMES,
+  WILDLIFE_POPULATION, wildlifeTargetsAt } from '../src/fauna.js';
 
 const world = createWorld(new THREE.Scene(), new THREE.Camera());
 
@@ -14,8 +15,8 @@ test('fauna homes stay on the high plateau, off roads, and clear of obstacles', 
     isRoad,
     isBlocked: obstacle,
   });
-  assert.equal(plan.sheep.length, 6);
-  assert.equal(plan.rabbits.length, 4);
+  assert.equal(plan.sheep.length, WILDLIFE_POPULATION.sheep);
+  assert.equal(plan.rabbits.length, WILDLIFE_POPULATION.rabbits);
   for (const [species, homes] of Object.entries(plan)) for (const home of homes) {
     const clearance = species === 'sheep' ? 4 : 2.5;
     assert.ok(home.y > 18 && Number.isFinite(home.y));
@@ -32,7 +33,8 @@ test('ground wildlife stays clear of inland water and its bank', () => {
     isRoad,
     isLake: flooded,
   });
-  assert.ok(plan.sheep.length < 6, 'a flooded grazing area removes unsafe homes');
+  assert.equal(plan.sheep.length, WILDLIFE_POPULATION.sheep,
+    'a flooded grazing area relocates animals to other safe ground');
   for (const home of plan.sheep) assert.equal(flooded(home.x, home.z, 9), false);
   for (const home of plan.rabbits) assert.equal(flooded(home.x, home.z, 7.5), false);
 
@@ -62,8 +64,8 @@ test('storm shelters ground wildlife and suppresses bird calls', () => {
   });
   const context = { playerX: -270, playerZ: 100 };
   let result = fauna.update(0.1, 0.1, 'mist', context);
-  assert.equal(result.birdsActive, 12);
-  assert.equal(result.rabbitsActive, 4);
+  assert.equal(result.birdsActive, WILDLIFE_POPULATION.birds);
+  assert.equal(result.rabbitsActive, WILDLIFE_POPULATION.rabbits);
   let calmCalls = 0;
   for (let frame = 1; frame <= 240; frame++) {
     result = fauna.update(0.1, frame * 0.1, 'mist', context);
@@ -74,7 +76,7 @@ test('storm shelters ground wildlife and suppresses bird calls', () => {
     result = fauna.update(0.1, frame * 0.1, 'storm', context);
     assert.equal(result.birdCalls, 0);
   }
-  assert.equal(result.birdsActive, 4);
+  assert.equal(result.birdsActive, 36);
   assert.equal(result.rabbitsActive, 0);
   assert.equal(scene.getObjectByName('Coastal rabbit bodies').count, 0);
   fauna.dispose();
@@ -101,7 +103,7 @@ test('birds animate, and sheep stop their wander when a new obstruction appears'
   rabbits.getMatrixAt(0, after);
   assert.ok(after.elements.every(Number.isFinite), 'wildlife starts with finite transforms');
   blocked = true;
-  fauna.update(0.016, 13, 'mist', { playerX: 0, playerZ: 270 });
+  fauna.update(0.016, 13, 'mist');
   birds.getMatrixAt(0, after);
   assert.notDeepEqual(before.elements, after.elements, 'flock must travel around the headland');
   assert.ok(after.elements.every(Number.isFinite));
@@ -117,13 +119,14 @@ test('animal details stay aligned and within a small instanced rendering budget'
     coastalRadius: world.coastalRadius,
     isRoad,
   });
-  fauna.update(0.016, 17, 'mist');
+  fauna.update(0.016, 17, 'mist', { playerX: 0, playerZ: 270 });
   const meshes = scene.children.filter((child) => child.isInstancedMesh);
   assert.equal(meshes.length, scene.children.length, 'wildlife uses instancing throughout');
   assert.ok(meshes.length <= 26, 'the extra anatomy stays within 26 draw calls');
   const expandedVertices = meshes.reduce((sum, mesh) =>
     sum + mesh.count * mesh.geometry.getAttribute('position').count, 0);
-  assert.ok(expandedVertices < 30000, 'procedural detail stays light enough for the island');
+  assert.ok(expandedVertices < 70000,
+    'distance packing keeps only a small fraction of the 250 animals in draw buffers');
   const matrix = new THREE.Matrix4();
   for (const mesh of meshes) {
     assert.ok(mesh.count > 0, `${mesh.name} starts visible in calm weather`);
@@ -154,12 +157,174 @@ test('animal details stay aligned and within a small instanced rendering budget'
   assert.ok(headPosition.distanceTo(eyePosition) < 0.4,
     'the sheep eye follows the grazing head');
   fauna.update(0.016, 18, 'rain');
-  assert.equal(scene.getObjectByName('Coastal rabbit inner ears').count, 4);
+  assert.equal(scene.getObjectByName('Coastal rabbit inner ears').count,
+    WILDLIFE_POPULATION.rabbits);
   fauna.update(0.016, 19, 'storm');
-  assert.equal(scene.getObjectByName('Coastal bird tails').count, 4);
+  assert.equal(scene.getObjectByName('Coastal bird tails').count, 36);
   for (const mesh of meshes.filter((item) => item.name.startsWith('Coastal rabbit'))) {
     assert.equal(mesh.count, 0, `${mesh.name} shelters with the rabbits`);
   }
   fauna.dispose();
   assert.equal(scene.children.length, 0);
+});
+
+test('room wildlife homes and IDs match the current deterministic island layout', () => {
+  const planned = planCoastalFauna(world.terrainHeight, {
+    coastalRadius: world.coastalRadius, isRoad, isLake: world.isLake,
+  });
+  for (const species of ['sheep', 'rabbits']) {
+    assert.equal(SERVER_WILDLIFE_HOMES[species].length, planned[species].length);
+    planned[species].forEach((home, index) => {
+      const staticHome = SERVER_WILDLIFE_HOMES[species][index];
+      for (const axis of ['x', 'y', 'z']) {
+        assert.ok(Math.abs(home[axis] - staticHome[axis]) < 1e-9,
+          `${species}-${index} ${axis} remains server compatible`);
+      }
+      assert.ok(Object.isFrozen(staticHome));
+    });
+  }
+  const targets = wildlifeTargetsAt(SERVER_WILDLIFE_HOMES, 43, 'rain',
+    { multiplayer: true });
+  assert.equal(targets.length, 250);
+  assert.equal(new Set(targets.map((target) => target.id)).size, 250);
+  assert.equal(targets.filter((target) => target.kind === 'bird').length, 120);
+  assert.equal(targets.filter((target) => target.kind === 'sheep').length, 52);
+  assert.equal(targets.filter((target) => target.kind === 'rabbit').length, 78);
+  const groundHomes = [...SERVER_WILDLIFE_HOMES.sheep,
+    ...SERVER_WILDLIFE_HOMES.rabbits];
+  for (const east of [false, true]) for (const south of [false, true]) {
+    assert.ok(groundHomes.filter((home) => (home.x >= 0) === east
+      && (home.z >= 0) === south).length >= 20,
+    'ground wildlife is spread across every island quadrant');
+  }
+  for (const bird of targets.filter((target) => target.kind === 'bird')) {
+    assert.ok(bird.y - islandTerrainHeightAt(bird.x, bird.z) > 9,
+      `${bird.id} stays above the high terrain`);
+  }
+  assert.deepEqual(targets.map((target) => target.kind).slice(0, 3),
+    ['bird', 'bird', 'bird']);
+  assert.equal(targets.filter((target) => target.active && target.kind === 'rabbit').length, 39);
+  assert.deepEqual(
+    wildlifeTargetsAt(SERVER_WILDLIFE_HOMES, 43, 'mist',
+      { multiplayer: true, playerX: 171, playerZ: 145 }),
+    wildlifeTargetsAt(SERVER_WILDLIFE_HOMES, 43, 'mist',
+      { multiplayer: true, playerX: -171, playerZ: -145 }),
+    'room wildlife poses cannot depend on a local player viewpoint',
+  );
+  const roomScene = new THREE.Scene();
+  const roomFauna = createFauna(roomScene, world.terrainHeight, {
+    coastalRadius: world.coastalRadius, isRoad, isLake: world.isLake,
+    isBlocked: () => true,
+  });
+  for (const weather of ['mist', 'rain', 'storm']) {
+    for (const seconds of [0, 13, 82]) {
+      roomFauna.update(0.016, seconds, weather,
+        { multiplayer: true, playerX: 171, playerZ: 145 });
+      const expected = wildlifeTargetsAt(SERVER_WILDLIFE_HOMES, seconds, weather,
+        { multiplayer: true, terrainHeight: islandTerrainHeightAt });
+      const actual = roomFauna.getTargets();
+      for (let i = 0; i < expected.length; i++) {
+        assert.equal(actual[i].id, expected[i].id);
+        for (const axis of ['x', 'y', 'z']) {
+          assert.ok(Math.abs(actual[i][axis] - expected[i][axis]) < 1e-9,
+            `room ${actual[i].id} ${axis} matches server at ${seconds}s ${weather}`);
+        }
+      }
+    }
+  }
+  roomFauna.dispose();
+});
+
+test('animal visuals cull by distance while all 250 combat targets remain available', () => {
+  const scene = new THREE.Scene();
+  const fauna = createFauna(scene, world.terrainHeight, {
+    coastalRadius: world.coastalRadius, isRoad, isLake: world.isLake,
+  });
+  fauna.update(0.016, 19, 'mist', { playerX: 0, playerZ: 270 });
+  assert.equal(fauna.getTargets().length, 250);
+  const birds = scene.getObjectByName('Coastal bird bodies');
+  const sheep = scene.getObjectByName('Feral sheep wool');
+  const rabbits = scene.getObjectByName('Coastal rabbit bodies');
+  assert.ok(birds.count > 0 && birds.count < WILDLIFE_POPULATION.birds);
+  assert.ok(sheep.count > 0 && sheep.count < WILDLIFE_POPULATION.sheep);
+  assert.ok(rabbits.count > 0 && rabbits.count < WILDLIFE_POPULATION.rabbits);
+  assert.equal(scene.getObjectByName('Coastal bird wings').count, birds.count);
+  assert.equal(scene.getObjectByName('Feral sheep legs').count, sheep.count * 4);
+  assert.equal(scene.getObjectByName('Coastal rabbit paws').count, rabbits.count * 4);
+  const firstVisible = fauna.getTargets().find((target) => target.kind === 'bird'
+    && Math.hypot(target.x, target.z - 270) < 250);
+  const matrix = new THREE.Matrix4();
+  birds.getMatrixAt(0, matrix);
+  assert.ok(Math.abs(matrix.elements[12] - firstVisible.x) < 1e-4);
+  assert.ok(Math.abs(matrix.elements[13] - firstVisible.y) < 1e-4);
+  fauna.dispose();
+});
+
+test('rendered wildlife exposes body targets and collapses after a server death', () => {
+  const scene = new THREE.Scene();
+  const fauna = createFauna(scene, world.terrainHeight, {
+    coastalRadius: world.coastalRadius, isRoad, isLake: world.isLake,
+  });
+  fauna.update(0.016, 43, 'mist', { multiplayer: true });
+  const byId = new Map(fauna.getTargets().map((target) => [target.id, target]));
+  const wool = scene.getObjectByName('Feral sheep wool');
+  const gull = scene.getObjectByName('Coastal bird bodies');
+  const matrix = new THREE.Matrix4();
+  wool.getMatrixAt(0, matrix);
+  assert.ok(Math.abs(matrix.elements[12] - byId.get('sheep-0').x) < 1e-4);
+  assert.ok(Math.abs(matrix.elements[13] - byId.get('sheep-0').y) < 1e-4);
+  gull.getMatrixAt(0, matrix);
+  assert.ok(Math.abs(matrix.elements[12] - byId.get('bird-0').x) < 1e-4);
+  assert.equal(fauna.setAnimalAlive('resident-0', false), false);
+  assert.equal(fauna.setAnimalAlive('sheep-0', false), true);
+  for (let frame = 0; frame < 7; frame++) {
+    fauna.update(0.1, 43 + frame * 0.1, 'mist', { multiplayer: true });
+  }
+  assert.equal(fauna.getTargets().find((target) => target.id === 'sheep-0').active, false);
+  wool.getMatrixAt(0, matrix);
+  assert.ok(matrix.determinant() < 0.6,
+    'the sheep shrinks during its brief non-graphic collapse');
+  for (let frame = 7; frame < 15; frame++) {
+    fauna.update(0.1, 43 + frame * 0.1, 'mist', { multiplayer: true });
+  }
+  assert.equal(wool.count, WILDLIFE_POPULATION.sheep - 1,
+    'the corpse leaves the draw buffer after collapsing');
+  fauna.setAnimalAlive('sheep-0', true);
+  fauna.update(0.016, 45, 'mist', { multiplayer: true });
+  wool.getMatrixAt(0, matrix);
+  assert.ok(matrix.determinant() > 0.01);
+  assert.equal(wool.count, WILDLIFE_POPULATION.sheep);
+  fauna.dispose();
+});
+
+test('birds can be hit, fall from their hit position, and reappear after respawn', () => {
+  const scene = new THREE.Scene();
+  const fauna = createFauna(scene, world.terrainHeight, {
+    coastalRadius: world.coastalRadius, isRoad, isLake: world.isLake,
+  });
+  fauna.update(0.016, 31, 'mist', { multiplayer: true });
+  const birdBefore = fauna.getTargets().find((target) => target.id === 'bird-0');
+  const bodies = scene.getObjectByName('Coastal bird bodies');
+  const matrix = new THREE.Matrix4();
+  bodies.getMatrixAt(0, matrix);
+  const airborneY = matrix.elements[13];
+  assert.equal(fauna.setAnimalAlive('bird-0', false), true);
+  for (let frame = 0; frame < 8; frame++) {
+    fauna.update(0.1, 31 + frame * 0.1, 'mist', { multiplayer: true });
+  }
+  const birdAfter = fauna.getTargets().find((target) => target.id === 'bird-0');
+  assert.equal(birdAfter.active, false);
+  assert.equal(birdAfter.x, birdBefore.x);
+  assert.equal(birdAfter.z, birdBefore.z);
+  bodies.getMatrixAt(0, matrix);
+  assert.ok(matrix.elements[13] < airborneY - 1, 'the gull falls toward the terrain');
+  for (let frame = 8; frame < 15; frame++) {
+    fauna.update(0.1, 31 + frame * 0.1, 'mist', { multiplayer: true });
+  }
+  assert.equal(bodies.count, WILDLIFE_POPULATION.birds - 1);
+  fauna.setAnimalAlive('bird-0', true);
+  fauna.update(0.016, 32.5, 'mist', { multiplayer: true });
+  assert.equal(bodies.count, WILDLIFE_POPULATION.birds);
+  assert.equal(fauna.getTargets().find((target) => target.id === 'bird-0').active, true);
+  fauna.dispose();
 });

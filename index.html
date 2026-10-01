@@ -21,7 +21,8 @@
       <div id="interaction" hidden></div>
       <div id="vehicle-hud" hidden></div>
       <div id="drone-hud" hidden>DRONE VIEW <span id="drone-altitude"></span></div>
-      <div class="controls-hint">WASD MOVE · M MAP · E TALK / DRIVE · G DRONE · F LIGHT · U AUDIO · ESC MENU</div>
+      <div id="stance-hud" hidden></div>
+      <div class="controls-hint">WASD MOVE · Q / TAB WEAPON WHEEL · H HOLSTER · C CROUCH · Z PRONE · E USE · ESC MENU</div>
     </div>
     <section id="screen" class="screen" aria-label="Island World menu">
       <div class="screen-card">
@@ -35,7 +36,7 @@
           <label>PIANO <output id="music-value">40%</output><input id="music-volume" type="range" min="0" max="100" step="5" value="40" /></label>
           <label>SEA <output id="sea-value">100%</output><input id="sea-volume" type="range" min="0" max="100" step="5" value="100" /></label>
         </div>
-        <p class="smallprint">Desktop: WASD move · mouse look · Shift run · E talk / enter or exit car · G drone · M map · F flashlight · U audio · Esc menu<br>Landscape touch: left stick move · drag right to look · on-screen actions and vehicle pedals</p>
+        <p class="smallprint">Desktop: WASD move · mouse look · Shift run · C crouch · Z prone · H holster or draw · hold Q or Tab for weapon wheel (tap to cycle) · left click fire or use · R reload · E talk / pick up / drive · G drone · M map · F flashlight · U audio · Esc menu<br>Landscape touch: left stick move · drag right to look · WHEEL to choose equipment or unarmed · CROUCH / PRONE posture buttons · on-screen actions and vehicle pedals</p>
       </div>
       <div class="screen-foot">GREYWAKE ISLAND · WORLD FOUNDATION</div>
     </section>
@@ -46,6 +47,7 @@
       <div id="touch-look" aria-label="Look around"></div>
       <div id="touch-stick" aria-label="Movement joystick"><span id="touch-stick-thumb"></span></div>
       <div class="touch-top"><button type="button" data-touch-action="menu">MENU</button><button type="button" data-touch-action="map">MAP</button><button type="button" data-touch-action="drone" id="touch-drone-toggle">DRONE</button><button type="button" data-touch-action="light">LIGHT</button><button type="button" data-touch-action="audio">AUDIO</button></div>
+      <div class="touch-stance"><button id="touch-crouch" type="button" data-touch-action="crouch">CROUCH</button><button id="touch-prone" type="button" data-touch-action="prone">PRONE</button></div>
       <button id="touch-action" type="button" data-touch-action="interact">USE</button>
       <div class="touch-drive"><button type="button" data-touch-hold="reverse">REVERSE</button><button type="button" data-touch-hold="brake">BRAKE</button><button type="button" data-touch-hold="throttle">ACCELERATE</button></div>
       <div class="touch-drone"><button type="button" data-touch-hold="descend">DOWN</button><button type="button" data-touch-hold="ascend">UP</button><button type="button" data-touch-hold="boost">BOOST</button></div>

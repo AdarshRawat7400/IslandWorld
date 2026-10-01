@@ -2,7 +2,7 @@
 
 An explorable coastal island built with Three.js and Blender assets. This project is a reusable world foundation: the terrain, weather, buildings, roads, vehicles, wildlife, ambient residents, ambience, and exploration controls are present, while campaign progression and story objectives are absent.
 
-**Play online:** [Island World](https://islandworld-3ccb4.web.app/)
+**Play Island World:** [islandworld-3ccb4.web.app](https://islandworld-3ccb4.web.app/). Firebase Hosting serves the game files. Private online rooms require a separately hosted HTTPS/WSS room server and a client build configured with `VITE_ISLAND_SERVER_URL`.
 
 The source project remains in its own folder. This folder can be developed and built independently.
 
@@ -26,6 +26,35 @@ npm run preview
 
 The output is `dist/`. Vite copies `public/` into that build, including the asset source records and license notices. The development and preview scripts listen on all network interfaces; use an appropriate firewall and access policy if sharing a local server.
 
+## Private multiplayer (local)
+
+Start the room server and the game in separate terminals:
+
+```powershell
+npm ci
+npm run server
+```
+
+```powershell
+npm run dev
+```
+
+Open **Private Multiplayer** in the menu, enter a name, then create an **Explore** or **PvP** room. Share its six-character code with up to nine other players. Both modes start with a service revolver and hunting rifle; Explore blocks player-versus-player damage, but wildlife and human NPCs can be hurt in either mode. Survivors retaliate with firearms after a direct hit or a clear near miss. PvP also enables player damage, with server-owned ammunition, health, armor, death, and safe respawning. Island pickups include a pump shotgun, grenades, mines, field medkits, ammunition boxes, and armor plates. A player can carry three guns, three grenades, and three mines. Medkits restore up to 40 health; an ammo box adds one magazine to each carried gun's reserve, up to its normal limit. Armor plates restore up to 50 armor, capped at 100; armor absorbs eligible NPC attacks and PvP damage before health. Defeated players drop carried equipment that others can collect. The room remains open when its creator leaves as long as another member stays. A dropped connection can rejoin the same identity for two minutes; page reloads try to resume automatically, and the menu also offers **Rejoin Saved Room**.
+
+| Combat action (solo or room) | Desktop | Landscape touch |
+| --- | --- | --- |
+| Fire / throw / place selected item | Left mouse button | FIRE / USE |
+| Aim | Hold right mouse button | Hold AIM |
+| Reload | R | RELOAD |
+| Quick-switch / equipment wheel | Tap Q or Tab to switch to the next available item; hold either key, move the mouse or use A/D, then release to equip | Tap WHEEL, then an item |
+| Holster gun / roam unarmed | H toggles the last gun; 1–3 or the wheel also draw a gun | Choose the sixth, **HOLSTER**, wheel slot; choose a gun to draw it again |
+| Direct equipment shortcut | 1–3 gun slots; 4 grenade; 5 mine | Equipment wheel |
+| Crouch / go prone | C / Z; press the same key again to stand | CROUCH / PRONE buttons |
+| Collect nearby pickup | E | PICK UP |
+| Respawn after defeat | Space or RESPAWN | RESPAWN |
+
+The two clients need to reach the same room server. Localhost on a friend's computer refers to their computer, so different-network play requires an online HTTPS/WSS room host and a client build configured with `VITE_ISLAND_SERVER_URL`. See [`MULTIPLAYER_SERVER.md`](MULTIPLAYER_SERVER.md) for hosting, origin, and persistence details. The Firebase site does not currently have an online room server; its room menu explains this while the solo game remains playable.
+
 ## Firebase Hosting
 
 This project targets the separate Firebase project `islandworld-3ccb4` in the `rawatadarsh2763@gmail.com` account. The Hosting configuration deploys the built `dist/` folder. Sign in to Firebase CLI with that Google account, then run:
@@ -38,7 +67,7 @@ firebase login:use rawatadarsh2763@gmail.com
 firebase deploy --only hosting --project islandworld-3ccb4
 ```
 
-The hosted site is `https://islandworld-3ccb4.web.app/`. Keep the bundled asset source and license notices in `public/` when making future builds.
+The hosted site is `https://islandworld-3ccb4.web.app/`. Before publishing multiplayer, configure `VITE_ISLAND_SERVER_URL` to the separately hosted HTTPS room server, add this exact Hosting origin to `ISLAND_ALLOWED_ORIGINS`, and verify both clients from different networks. Keep the bundled asset source and license notices in `public/` when making future builds.
 
 ## Explore
 
@@ -46,7 +75,10 @@ The hosted site is `https://islandworld-3ccb4.web.app/`. Keep the bundled asset 
 | --- | --- |
 | Move and look | WASD and mouse |
 | Run | Shift |
-| Talk to a nearby resident, drive, or leave a car | E |
+| Crouch / go prone | C / Z; press again to stand |
+| Holster or draw last weapon | H |
+| Switch equipment | Tap Q or Tab to advance; hold to open the six-slot wheel |
+| Talk, drive, leave a car, or collect a nearby item | E |
 | Steer while driving | A / D |
 | Open map | M |
 | Enter or leave drone view | G |
@@ -54,7 +86,7 @@ The hosted site is `https://islandworld-3ccb4.web.app/`. Keep the bundled asset 
 | Mute or unmute audio | U |
 | Open or close menu | Escape |
 
-Desktop mouse look starts when you select **Explore the Island** or **Resume Exploring**. If the browser blocks mouse capture, hold the left mouse button and drag on the game view to look around; click the game again to retry capture.
+Desktop mouse look starts when you select **Explore the Island** or **Resume Exploring**. If the browser blocks mouse capture, hold the left mouse button and drag on the game view to look around; click the game again to retry capture. The island has 250 wildlife targets across 12 bird flocks and safe grazing areas: 120 birds, 52 sheep, and 78 rabbits. Guns and explosives can hit birds in flight as well as ground animals; they fall and fade without gore, then return after 90 seconds. All named residents, prison guards, and detainees can be wounded or killed. A direct hit or a clear near miss alerts them: guards use rifles, while residents and detainees use revolvers within shorter ranges. Cover blocks their attacks. Dead NPCs stop talking and blocking paths and stay dead for the current solo session or room. NPCs can down a solo player, who may respawn after three seconds at a safe island clearing with five seconds of protection. Crouching and going prone lower the camera and movement speed; each stance also has its own room hitbox. Choose **HOLSTER** in the wheel or press H to explore without a visible weapon. The health and armor bars remain visible while on foot; ammo and weapon controls appear when a gun is selected. The gun and hand asset sources are documented in [`CREDITS.md`](CREDITS.md).
 
 The menu offers changing weather, mist, rain, thunderstorm, and dawn, plus separate piano and sea-volume controls. A map shows roads, landmarks, and the current position. On a landscape touch device, the project also displays a movement stick, look area, and context controls. The current visual target is desktop; lower-capability devices use a reduced render profile.
 
@@ -64,7 +96,7 @@ Walking off a high cliff triggers a fall and returns the player to safe ground. 
 
 - High coastal cliffs, textured terrain, reef, a highland lake, ocean swells, breaking surf, shoreline spray, two landing areas, and a West Headland lighthouse.
 - Two distant, high-cliff island silhouettes with rock strata, coves, wind-shaped tree groves, small ridge buildings, weather-aware haze, and rotating lighthouse beacons.
-- Dense generated grass, including lower wind-scoured cover around the high cliff rim, wind-shaped trees, seabirds, sheep, rabbits, ambient residents, and road traffic.
+- Dense generated grass, including lower wind-scoured cover around the high cliff rim, wind-shaped trees, 250 instanced birds, sheep, and rabbits with nearby distance culling, ambient residents, and road traffic.
 - Six CC0 phototextured coastal model sets add grass-tuft variation, ferns, low and tall shrubs, fallen branches, and mossy stones. Terrain-cell instancing and distance culling keep their rendering bounded; larger stones and branches block movement.
 - Six CC0 harbor models add life rings, cargo crates, fishing buckets, utility boxes, portable searchlights, and floating channel buoys. Each 1K model loads once nearby; repeated props share geometry and maps, and solid items block walking and driving.
 - Procedural clouds, moving storm fronts, spatial lightning, rain, splashes, wet windows, wind, and fire effects.
@@ -73,7 +105,7 @@ Walking off a high cliff triggers a fall and returns the player to safe ground. 
 
 Physical landmarks and coordinates live in [`src/worldSites.js`](src/worldSites.js). The environment entry point is [`src/main.js`](src/main.js); [`src/environmentStructures.js`](src/environmentStructures.js) places detailed buildings, lighting, boardwalks, and navigational objects. The original world systems remain in focused modules such as [`src/world.js`](src/world.js), [`src/vegetation.js`](src/vegetation.js), [`src/coastalDetails.js`](src/coastalDetails.js), [`src/harborProps.js`](src/harborProps.js), [`src/roads.js`](src/roads.js), [`src/fauna.js`](src/fauna.js), [`src/islandResidents.js`](src/islandResidents.js), and [`src/audio.js`](src/audio.js). Sparse residents use six CC0 MakeHuman based characters and two separately credited Sketchfab coastal figures; the more distant prison population stays instanced. Residents give brief ambient observations when approached, without starting campaign quests. Their model loading and draw distance are limited for browser performance.
 
-The sea uses a shared wave field in [`src/oceanWaveField.js`](src/oceanWaveField.js) for rendered swells and boat motion. The elevated lake basin, shoreline, and smaller wind ripples are defined separately in [`src/inlandLake.js`](src/inlandLake.js). The distant landmasses, batched cliff/tree detail, shared rotating Fresnel-style lighthouse optics, and view-facing glare live in [`src/distantIslands.js`](src/distantIslands.js), [`src/offshoreIslandDetail.js`](src/offshoreIslandDetail.js), [`src/offshoreLighthouse.js`](src/offshoreLighthouse.js), and [`src/lighthouseGlare.js`](src/lighthouseGlare.js). In development, `?test=offshore_north`, `?test=offshore_southwest`, `?test=west_rim`, `?test=lighthouse`, and `?test=light_rain` start from useful sightlines; combine them with `?weather=clear&time=noon` or `?weather=storm&time=night`. Use `?test=light_rain&weather=rain&time=noon&rain=0.08` to inspect low-intensity splashes.
+The sea uses a shared wave field in [`src/oceanWaveField.js`](src/oceanWaveField.js) for rendered swells and boat motion. The elevated lake basin, shoreline, and smaller wind ripples are defined separately in [`src/inlandLake.js`](src/inlandLake.js). The distant landmasses, batched cliff/tree detail, shared rotating Fresnel-style lighthouse optics, and view-facing glare live in [`src/distantIslands.js`](src/distantIslands.js), [`src/offshoreIslandDetail.js`](src/offshoreIslandDetail.js), [`src/offshoreLighthouse.js`](src/offshoreLighthouse.js), and [`src/lighthouseGlare.js`](src/lighthouseGlare.js). In development, `?test=offshore_north`, `?test=offshore_southwest`, `?test=west_rim`, `?test=lighthouse`, `?test=light_rain`, and `?test=wildlife` start from useful sightlines; combine them with `?weather=clear&time=noon` or `?weather=storm&time=night`. Use `?test=light_rain&weather=rain&time=noon&rain=0.08` to inspect low-intensity splashes. The development-only `?test=pickup` starts beside armor, health, and ammo supplies with partially depleted stats for end-to-end pickup checks.
 
 ## Dynamic weather and daylight
 

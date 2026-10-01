@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { createWorld } from '../src/world.js';
+import { createWorld, islandTerrainHeightAt, playerEyeHeightAt } from '../src/world.js';
+import { landingBoardwalkSections, landingBoardwalkTopAt } from '../src/landingBoardwalk.js';
 import { circlesBlock, PLAYER_RADIUS } from '../src/collision.js';
 import {
   grassPathDistance, southBoardwalkCenterlineDistance,
@@ -15,6 +16,18 @@ function deckDistance(x, z) {
   return Math.hypot(Math.max(0, Math.abs(x) - DECK.halfWidth),
     Math.max(DECK.startZ - z, 0, z - DECK.endZ));
 }
+
+test('player eye height remains above the pitched landing timbers even when prone', () => {
+  const sections = landingBoardwalkSections(islandTerrainHeightAt);
+  for (let z = DECK.startZ; z < DECK.endZ; z += 2) {
+    const deckTop = landingBoardwalkTopAt(sections, z);
+    const ground = playerEyeHeightAt(0, z) - 1.88;
+    assert.ok(ground >= deckTop + 0.019,
+      `walking surface is below the ramp at z=${z}`);
+    assert.ok(ground + 0.56 > deckTop + 0.5,
+      `prone camera clips the ramp at z=${z}`);
+  }
+});
 
 test('grass path mask follows the physical boardwalk rather than ending at the landing map marker', () => {
   const untrackedTerrain = () => ({ trailDistance: 50 });

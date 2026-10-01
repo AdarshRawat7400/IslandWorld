@@ -48,6 +48,7 @@ body.cinematic-capture #map-panel { display: none !important; }
 #crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -56%); color: #f6f0dbb9; font-size: 2rem; line-height: 1; }
 #interaction, #vehicle-hud, #drone-hud { position: absolute; left: 50%; bottom: 82px; transform: translateX(-50%); padding: .6rem 1rem; color: #f3eee0; background: #0d2126bf; border: 1px solid #dfc38e54; text-align: center; white-space: nowrap; font-size: .78rem; letter-spacing: .08em; }
 #vehicle-hud, #drone-hud { bottom: 115px; }
+#stance-hud { position: absolute; left: 50%; bottom: 115px; transform: translateX(-50%); padding: .4rem .7rem; color: #f3eee0; background: #0d2126bf; border: 1px solid #dfc38e54; font-size: .68rem; letter-spacing: .1em; }
 #drone-altitude { margin-left: 12px; color: #d6bc8d; }
 .controls-hint { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); width: max-content; max-width: 95vw; color: #c6d2cb; font-size: .66rem; letter-spacing: .1em; text-align: center; text-shadow: 0 2px 10px #000; }
 .panel { z-index: 16; background: #071116d9; }
@@ -60,14 +61,16 @@ body.cinematic-capture #map-panel { display: none !important; }
 #touch-look { position: absolute; inset: 0 0 0 42%; pointer-events: auto; }
 #touch-stick { position: absolute; left: 25px; bottom: 45px; width: 122px; height: 122px; border: 2px solid #d7e6dd8a; border-radius: 50%; background: #10262c9c; pointer-events: auto; }
 #touch-stick-thumb { display: block; position: absolute; width: 54px; height: 54px; left: 32px; top: 32px; border-radius: 50%; background: #e8d2a8b5; border: 1px solid #f5e6c5; }
-.touch-top, .touch-drive, .touch-drone { position: absolute; display: flex; gap: 7px; pointer-events: auto; }
+.touch-top, .touch-drive, .touch-drone, .touch-stance { position: absolute; display: flex; gap: 7px; pointer-events: auto; }
 .touch-top { top: 10px; right: 10px; }
 .touch-drive, .touch-drone { right: 18px; bottom: 28px; }
+.touch-stance { left: 24px; bottom: 178px; }
 #touch-controls button { min-height: 40px; border: 1px solid #d0dcd06e; border-radius: 4px; padding: .4rem .65rem; color: #f1f3e9; background: #0b2028b8; font-size: .65rem; font-weight: 600; letter-spacing: .04em; }
 #touch-controls button.pressed { background: #d1b77b; color: #0b2028; }
 #touch-action { position: absolute; right: 35px; bottom: 95px; pointer-events: auto; }
 #touch-controls[data-mode="walking"] .touch-drive, #touch-controls[data-mode="walking"] .touch-drone,
-#touch-controls[data-mode="driving"] .touch-drone, #touch-controls[data-mode="drone"] .touch-drive { display: none; }
+#touch-controls[data-mode="driving"] .touch-drone, #touch-controls[data-mode="driving"] .touch-stance,
+#touch-controls[data-mode="drone"] .touch-drive, #touch-controls[data-mode="drone"] .touch-stance { display: none; }
 #touch-rotate { position: fixed; inset: 0; z-index: 35; display: grid; place-items: center; padding: 2rem; background: #08141a; text-align: center; letter-spacing: .12em; }
 #toast { position: fixed; left: 50%; top: 17%; transform: translateX(-50%); z-index: 18; padding: .7rem 1rem; border: 1px solid #d6c39770; background: #102128e8; text-align: center; font-size: .75rem; letter-spacing: .1em; }
 @media (max-width: 780px) { .screen-card { margin: 0; } .controls-hint { display: none; } .hud-top { top: 8px; left: 8px; right: 8px; } #place-label { top: 49px; left: 10px; } .screen-foot { left: 18px; bottom: 8px; } }

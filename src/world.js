@@ -11,6 +11,7 @@ import { createOceanWaveField, OCEAN_WAVE_GLSL } from './oceanWaveField.js';
 import { createDistantIslands } from './distantIslands.js';
 import { createOffshoreLighthouse } from './offshoreLighthouse.js';
 import { MAIN_LIGHTHOUSE_SITE } from './worldSites.js';
+import { landingBoardwalkSections, landingBoardwalkTopAt } from './landingBoardwalk.js';
 
 // The island is a rounded, irregular square of approximately 0.45 km².
 // All coordinates are metres; +z points toward the landing beach.
@@ -245,6 +246,73 @@ function surface(x, z) {
     height = mix(height, 45 - (z - 60) * 0.04, yardBlend);
   }
   return { height: sculptLakeTerrain(height, x, z), radius: r, trailDistance: trail.distance };
+}
+
+// Server-side movement validation uses the same analytic island and the same
+// two-triangle terrain grid as the renderer, without constructing a scene.
+// The player view blends toward that grid at the cliff crest and stands on the
+// South Landing pier where it crosses the water.
+let validationBoardwalkSections;
+export function playerEyeHeightAt(x, z) {
+  const analytic = surface(x, z).height;
+  const cliffBlend = smooth(0.93, 0.955, islandRadius(x, z))
+    * smooth(10, 18, analytic);
+  let ground = analytic;
+  if (cliffBlend > 0) {
+    const cells = TERRAIN_DIVISIONS;
+    const gx = clamp((x / TERRAIN_SIZE + 0.5) * cells, 0, cells - 1e-7);
+    const gz = clamp((z / TERRAIN_SIZE + 0.5) * cells, 0, cells - 1e-7);
+    const ix = Math.floor(gx);
+    const iz = Math.floor(gz);
+    const fx = gx - ix;
+    const fz = gz - iz;
+    const vertex = (column, row) => Math.fround(surface(
+      (column / cells - 0.5) * TERRAIN_SIZE,
+      (row / cells - 0.5) * TERRAIN_SIZE,
+    ).height);
+    const a = vertex(ix, iz);
+    const b = vertex(ix + 1, iz);
+    const c = vertex(ix, iz + 1);
+    const d = vertex(ix + 1, iz + 1);
+    const rendered = fx + fz <= 1
+      ? a * (1 - fx - fz) + b * fx + c * fz
+      : d * (fx + fz - 1) + b * (1 - fz) + c * (1 - fx);
+    ground = mix(analytic, rendered, cliffBlend);
+  }
+  if (Math.abs(x) <= 3.3 && z >= 268 && z <= 343) {
+    validationBoardwalkSections ??= landingBoardwalkSections(
+      (sampleX, sampleZ) => surface(sampleX, sampleZ).height);
+    const boardwalkTop = landingBoardwalkTopAt(validationBoardwalkSections, z);
+    if (boardwalkTop !== null) ground = Math.max(ground, boardwalkTop + 0.02);
+  }
+  if (Math.abs(x) < 3.8 && z >= 342 && z <= 357) ground = Math.max(0.49, ground);
+  return ground + CLIFF_FALL.eyeHeight;
+}
+
+export function islandCoastalRadiusAt(x, z) { return islandRadius(x, z); }
+
+export function islandTerrainHeightAt(x, z) { return surface(x, z).height; }
+
+// A small fixed number of terrain samples is enough to reject wildlife hits
+// through a headland. This is independent of renderer meshes and can also be
+// used by the local solo shooting path for the same result.
+export function shotBlockedByTerrain(origin, target, sampleStep = 2.5) {
+  if (!Number.isFinite(sampleStep) || sampleStep <= 0
+    || !origin || !target || ![origin.x, origin.y, origin.z,
+    target.x, target.y, target.z].every(Number.isFinite)) return true;
+  const dx = target.x - origin.x;
+  const dy = target.y - origin.y;
+  const dz = target.z - origin.z;
+  const length = Math.hypot(dx, dy, dz);
+  const samples = Math.ceil(length / sampleStep);
+  for (let index = 1; index < samples; index++) {
+    const fraction = index / samples;
+    const x = origin.x + dx * fraction;
+    const z = origin.z + dz * fraction;
+    const height = playerEyeHeightAt(x, z) - CLIFF_FALL.eyeHeight;
+    if (height > origin.y + dy * fraction + 0.15) return true;
+  }
+  return false;
 }
 
 function loadPbrMap(filename, repeat, isColor = false) {

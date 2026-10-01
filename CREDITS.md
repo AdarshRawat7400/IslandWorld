@@ -94,11 +94,22 @@ The subdued piano file `public/assets/music/forget-me-not-loop.ogg` is **Forget 
 
 Six generated character GLBs and their shared images in `public/assets/` provide the other island residents. Their meshes, rigs, skin, hair, clothing, and textures come from the official [MakeHuman system assets](https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html), whose selected core assets are [CC0](https://static.makehumancommunity.org/about/license.html). They were generated offline with [MPFB](https://extensions.blender.org/add-ons/mpfb/) in Blender. MPFB is a build tool; its code and the full source asset pack are not shipped. The new `mira.glb` is the older lake watcher, with the pack's old female skin, silver bob, coat, trousers, and walking shoes; `dane.glb` is the pump mechanic in work overalls. They replace two repeated rigs without adding to the resident count. The selected part and license details are in [`public/THIRD_PARTY_LICENSES.md`](public/THIRD_PARTY_LICENSES.md); the new models' exact official download URLs, input and delivered hashes, and texture changes are in [`public/assets/MAKEHUMAN_SOURCES.md`](public/assets/MAKEHUMAN_SOURCES.md). The generated GLBs reference lossless WebP images in `public/assets/shared_images/` and need browser WebP support.
 
+## Combat models and effects
+
+The hunting rifle uses **Bolt Action Rifle 7.62** by [Mateusz Sadek for Poly Haven](https://polyhaven.com/a/bolt_action_rifle_7_62), released under [CC0 1.0](https://polyhaven.com/license). The locally bundled 1K glTF, geometry buffer, and six texture maps are in `public/assets/combat/bolt_action_rifle_7_62/`; their exact URLs and verified hashes are in [`SOURCES.md`](public/assets/combat/bolt_action_rifle_7_62/SOURCES.md). The gun loads asynchronously. A project-created procedural rifle remains available if the model cannot load.
+
+The service revolver uses **Revolver Game Asset** by [loafbrr_1 on OpenGameArt](https://opengameart.org/content/revolver-game-asset), released under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/). A compact GLB with three embedded 1K WebP PBR maps is in `public/assets/combat/revolver-loafbrr-cc0.glb`. The [combat source record](public/assets/combat/SOURCES.md) gives the original archive, conversion details, and SHA-256 hashes. A project-created procedural revolver remains available if the model cannot load.
+
+The revolver's first-person trigger arm uses [**fps arms (rigged only)** by para on OpenGameArt](https://opengameart.org/content/fps-arms-rigged-only), released under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/). para adapted a MakeHuman mesh and texture. We baked an animation pose, kept the right arm, colored its coat portion, and aligned the wrist to the revolver grip. The compact GLB and conversion record are in [`public/assets/combat/`](public/assets/combat/SOURCES.md). The rifle and shotgun retain their project-created procedural two-hand poses, and the revolver uses its procedural fallback if the GLB cannot load.
+
+The pump shotgun, grenade and mine meshes, procedural revolver and rifle fallbacks, fallback hands and coat sleeves, muzzle flashes, bullet traces, blast particles, and firing and explosion tones are original procedural geometry and synthesized audio in `src/combatPresentation.js` and `src/explosivePresentation.js`. Their walnut grain, worn steel, sleeve weave, and fallback skin detail maps are generated in code at runtime. Remote players reuse the credited CC0 MakeHuman character GLBs above.
+
 ## Runtime libraries and fonts
 
 | Package | Use | License |
 | --- | --- | --- |
 | [Three.js](https://threejs.org/) | 3D rendering and GLB loading | MIT |
+| [Socket.IO](https://socket.io/) | Private room server and browser transport | MIT |
 | [Vite](https://vite.dev/) | Development server and static build | MIT |
 | [DM Sans](https://fontsource.org/fonts/dm-sans) via Fontsource | Interface text | SIL OFL 1.1 |
 | [Libre Baskerville](https://fontsource.org/fonts/libre-baskerville) via Fontsource | Display text | SIL OFL 1.1 |

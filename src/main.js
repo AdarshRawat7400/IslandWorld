@@ -14,7 +14,10 @@ import { createPrisonPopulation } from './prisonPopulation.js';
 import { createIslandResidents } from './islandResidents.js';
 import { createHarborProps } from './harborProps.js';
 import { createPumpInterior } from './pumpInterior.js';
-import { createFauna } from './fauna.js';
+import { createFauna, WILDLIFE_KINDS } from './fauna.js';
+import { createLootWorld } from './lootWorld.js';
+import { createInventory, createWorldPickupSpawns, collectItem, consumeItem,
+  canCollectItem, canApplySupply, applySupply, ITEM_DEFINITIONS, GUN_IDS } from './combatLoot.js';
 import { createScenicBoats } from './scenicBoats.js';
 import { createSeaLife } from './seaLife.js';
 import { createFireAtmosphere } from './fireAtmosphere.js';
@@ -40,6 +43,16 @@ import {
   cliffFallPresentation, createCliffFallState, rememberSafeGround,
 } from './cliffFall.js';
 import { createFallPresentation } from './fallPresentation.js';
+import { createMultiplayerClient } from './multiplayerClient.js';
+import { createMultiplayerRoomUI } from './multiplayerRoomUi.js';
+import { createRemotePlayers } from './remotePlayers.js';
+import { createCombatPresentation } from './combatPresentation.js';
+import { playerStance, togglePlayerStance } from './playerStance.js';
+import { WEAPONS, EXPLOSIVES, SAFE_SPAWNS, RESPAWN_DELAY_MS,
+  SPAWN_PROTECTION_MS, blastDamageAt, rayWildlifeHit } from './multiplayerRules.js';
+import { createNpcCombatant, rayNpcHit, npcThreatenedByShot,
+  alertNpc, applyNpcDamage, npcAttackDecision } from './npcCombatRules.js';
+import { shotBlockedByStructures, shotBlockedByTerrain } from '../server/lineOfSight.js';
 import './style.css';
 
 const $ = (id) => document.getElementById(id);
@@ -169,7 +182,9 @@ const music = createMusic();
 let ambientTraffic = null;
 let residents = null;
 
-const player = { x: 0, z: 270, yaw: 0, pitch: -0.05, walkPhase: 0 };
+const player = { x: 0, z: 270, yaw: 0, pitch: -0.05, walkPhase: 0,
+  stance: 'stand' };
+let cameraEyeHeight = playerStance('stand').eyeHeight;
 // Development-only viewpoints for water and shoreline-detail rendering QA.
 const waterQaView = import.meta.env.DEV ? new URLSearchParams(location.search).get('test') : null;
 if (waterQaView === 'lake') {
@@ -197,6 +212,8 @@ if (waterQaView === 'lake') {
   Object.assign(player, { x: 124, z: 152, yaw: 0, pitch: -0.06 });
 } else if (waterQaView === 'west_searchlight') {
   Object.assign(player, { x: -191, z: -108.5, yaw: -0.51, pitch: -0.07 });
+} else if (waterQaView === 'wildlife') {
+  Object.assign(player, { x: -214, z: 122, yaw: 0, pitch: -0.04 });
 } else if (waterQaView === 'offshore_north') {
   Object.assign(player, { x: -65, z: -315, yaw: -0.28, pitch: -0.03 });
 } else if (waterQaView === 'offshore_southwest') {
@@ -212,6 +229,7 @@ let ambientElapsed = 0;
 let footstepDistance = 0;
 let respawnFadeTime = -1;
 let fallExpectedSeconds = 1.8;
+let pointerLockFallback = false;
 let toastUntil = 0;
 let lastPlaceId = '';
 const cliffWorld = {
@@ -363,11 +381,18 @@ function syncSettings() {
 musicSlider.addEventListener('input', syncSettings);
 seaSlider.addEventListener('input', syncSettings);
 weatherSelect.addEventListener('change', () => {
-  storeSettings();
+  if (multiplayer.getState().room) {
+    void multiplayer.request('world:set', { weather: weatherSelect.value, time: timeSelect.value })
+      .catch((error) => showToast(error.message));
+  } else storeSettings();
   showToast(weatherSelect.value === 'auto' ? 'CHANGING WEATHER' : weatherSelect.selectedOptions[0].textContent.toUpperCase());
 });
+const lootWorld = createLootWorld(scene, world.terrainHeight);
 timeSelect.addEventListener('change', () => {
-  storeSettings();
+  if (multiplayer.getState().room) {
+    void multiplayer.request('world:set', { weather: weatherSelect.value, time: timeSelect.value })
+      .catch((error) => showToast(error.message));
+  } else storeSettings();
   showToast(timeSelect.value === 'auto' ? 'DAY AND NIGHT CYCLE'
     : timeSelect.selectedOptions[0].textContent.toUpperCase());
 });
@@ -391,13 +416,18 @@ function requestLook() {
   }
   try {
     const request = capture.call(renderer.domElement);
-    request?.catch?.(() => showToast('MOUSE CAPTURE BLOCKED · DRAG TO LOOK OR CLICK GAME TO RETRY'));
+    request?.catch?.(() => {
+      pointerLockFallback = true;
+      showToast('MOUSE CAPTURE BLOCKED · DRAG TO LOOK OR CLICK GAME TO RETRY');
+    });
   } catch {
+    pointerLockFallback = true;
     showToast('MOUSE CAPTURE BLOCKED · DRAG TO LOOK OR CLICK GAME TO RETRY');
   }
 }
 function openMenu() {
   if (!started) return;
+  combat.closeEquipmentWheel({ commit: false });
   menuOpen = true;
   keys.clear();
   document.exitPointerLock?.();
@@ -437,6 +467,7 @@ function mapSvg() {
 }
 function openMap() {
   if (!started || menuOpen) return;
+  combat.closeEquipmentWheel({ commit: false });
   mapOpen = true;
   keys.clear();
   document.exitPointerLock?.();
@@ -453,11 +484,17 @@ function closeMap() {
 $('map-close').addEventListener('click', closeMap);
 
 function toggleDrone() {
-  if (!started || menuOpen || mapOpen || driving.active || cliffFall.phase !== 'grounded') return;
+  if (!started || menuOpen || mapOpen || driving.active || cliffFall.phase !== 'grounded'
+    || multiplayer.getState().self?.dead
+    || (!multiplayer.getState().room && soloHealth <= 0)) return;
+  combat.closeEquipmentWheel({ commit: false });
   if (drone.active) { drone.exit(); showToast('ON FOOT'); }
-  else if (drone.enter({ x: player.x, z: player.z,
-    y: structures.playerGroundHeight(player.x, player.z) + CLIFF_FALL.eyeHeight,
-    yaw: player.yaw, pitch: player.pitch })) showToast('DRONE VIEW');
+  else {
+    setPlayerStance('stand', { quiet: true });
+    if (drone.enter({ x: player.x, z: player.z,
+      y: structures.playerGroundHeight(player.x, player.z) + CLIFF_FALL.eyeHeight,
+      yaw: player.yaw, pitch: player.pitch })) showToast('DRONE VIEW');
+  }
   keys.clear();
   touchControls.reset();
   refreshTouchUi();
@@ -466,39 +503,130 @@ function toggleAudio() {
   muted = !muted;
   sound.setMuted(muted);
   music.setMuted(muted);
+  combat.setMuted(muted);
   showToast(muted ? 'AUDIO OFF' : 'AUDIO ON');
 }
 function nearbyInteraction() {
   if (drone.active) return null;
   const vehicle = driving.nearbyVehicle(player.x, player.z, 4.4);
+  const pickup = lootWorld.nearby(player.x, player.z, 2.7);
   const islander = residents.nearestPerson(player.x, player.z);
   const prison = prisonPopulation.nearestPerson(player.x, player.z);
-  const person = [islander && { kind: 'resident', person: islander, distance: islander.distance },
+  const closest = [pickup && { kind: 'loot', item: pickup.item, distance: pickup.distance },
+    islander && { kind: 'resident', person: islander, distance: islander.distance },
     prison && { kind: 'prison', person: prison, distance: prison.distance }]
     .filter(Boolean).sort((a, b) => a.distance - b.distance)[0];
   // A closer vehicle keeps its established E action when someone stands by it.
-  if (vehicle && (!person || vehicle.distance <= person.distance + 0.35)) {
+  if (vehicle && (!closest || vehicle.distance <= closest.distance + 0.35)) {
     return { kind: 'vehicle', vehicle: vehicle.vehicle, distance: vehicle.distance };
   }
-  return person || null;
+  return closest || null;
+}
+
+const pickupPending = new Set();
+function pickupLoot(item) {
+  if (!item || pickupPending.has(item.id)) return;
+  const supply = ['medkit', 'ammo', 'armor'].includes(item.kind);
+  const inRoom = Boolean(multiplayer.getState().room);
+  if (!supply && !canCollectItem(currentInventory, item.itemId)) {
+    showToast('INVENTORY FULL OR ALREADY OWNED', 1900);
+    return;
+  }
+  if (supply && !inRoom && !canApplySupply({ inventory: soloInventory,
+    health: soloHealth, armor: soloArmor, ammo: soloAmmo }, item.itemId)) {
+    showToast(item.kind === 'medkit' ? 'HEALTH ALREADY FULL'
+      : item.kind === 'armor' ? 'ARMOR ALREADY FULL' : 'AMMO RESERVES FULL', 1900);
+    return;
+  }
+  if (inRoom) {
+    pickupPending.add(item.id);
+    void multiplayer.request('loot:pickup', { id: item.id })
+      .then((result) => {
+        currentInventory = createInventory(result.inventory);
+        localAmmo = result.ammo;
+        lastRoomHealth = result.health;
+        lastRoomArmor = result.armor;
+        combat.setInventory(currentInventory);
+        combat.setState({ health: result.health, armor: result.armor,
+          ammo: result.ammo?.[combat.selectedWeapon] });
+        showToast(`${item.label.toUpperCase()} COLLECTED`);
+      })
+      .catch((error) => showToast(error.message, 1800))
+      .finally(() => pickupPending.delete(item.id));
+    return;
+  }
+  const index = soloPickups.findIndex((candidate) => candidate.id === item.id);
+  if (index < 0) return;
+  if (supply) {
+    const result = applySupply({ inventory: soloInventory, health: soloHealth,
+      armor: soloArmor, ammo: soloAmmo }, item.itemId);
+    if (!result.applied) return;
+    soloHealth = result.health;
+    soloArmor = result.armor;
+    soloAmmo = result.ammo;
+    localAmmo = soloAmmo;
+    soloPickups.splice(index, 1);
+    lootWorld.sync(soloPickups);
+    combat.setState({ health: soloHealth, armor: soloArmor,
+      ammo: soloAmmo[combat.selectedWeapon] });
+    showToast(`${item.label.toUpperCase()} COLLECTED`);
+    return;
+  }
+  const before = soloInventory;
+  const next = collectItem(before, item.itemId, soloPickups[index].count);
+  if (next === before) return;
+  const count = item.kind === 'gun' ? 1
+    : next[item.kind === 'grenade' ? 'grenades' : 'mines']
+      - before[item.kind === 'grenade' ? 'grenades' : 'mines'];
+  if (count >= soloPickups[index].count) soloPickups.splice(index, 1);
+  else soloPickups[index] = { ...soloPickups[index],
+    count: soloPickups[index].count - count };
+  soloInventory = next;
+  currentInventory = next;
+  combat.setInventory(currentInventory);
+  lootWorld.sync(soloPickups);
+  showToast(`${item.label.toUpperCase()} COLLECTED`);
 }
 function interact() {
-  if (!started || menuOpen || mapOpen || drone.active || cliffFall.phase !== 'grounded') return;
+  if (!started || menuOpen || mapOpen || drone.active || cliffFall.phase !== 'grounded'
+    || multiplayer.getState().self?.dead
+    || (!multiplayer.getState().room && soloHealth <= 0)) return;
   if (driving.active) {
+    const vehicle = driving.active;
     const exited = driving.exit((x, z) => world.isWalkable(x, z) && canStandAt(x, z));
     if (!exited) { showToast('STOP THE CAR TO EXIT'); return; }
     player.x = exited.x;
     player.z = exited.z;
     player.yaw = exited.yaw;
+    if (multiplayer.getState().room) {
+      void (async () => {
+        try {
+          await multiplayer.request('vehicle:state', { id: vehicle.id, x: vehicle.x,
+            z: vehicle.z, heading: vehicle.heading, speed: 0 });
+        } catch { /* The exit still releases the server's car lease. */ }
+        try { await multiplayer.request('vehicle:exit', { id: vehicle.id }); }
+        catch (error) { showToast(error.message); }
+      })();
+    }
     showToast('ON FOOT');
   } else {
     const nearby = nearbyInteraction();
     if (nearby?.kind === 'vehicle') {
-      if (driving.enter(nearby.vehicle.id)) {
+      const enter = () => {
+        setPlayerStance('stand', { quiet: true });
+        if (!driving.enter(nearby.vehicle.id)) return;
         player.x = nearby.vehicle.x;
         player.z = nearby.vehicle.z;
         showToast('DRIVING · W/S PEDALS · A/D STEER · SPACE BRAKE · E EXIT');
-      }
+        refreshTouchUi();
+      };
+      if (multiplayer.getState().room) {
+        void multiplayer.request('vehicle:enter', { id: nearby.vehicle.id })
+          .then(({ vehicle }) => { Object.assign(nearby.vehicle, vehicle); enter(); })
+          .catch((error) => showToast(error.message));
+      } else enter();
+    } else if (nearby?.kind === 'loot') {
+      pickupLoot(nearby.item);
     } else if (nearby?.person) {
       const line = currentWeather() === 'storm' && nearby.person.stormLine
         ? nearby.person.stormLine : nearby.person.line;
@@ -508,9 +636,18 @@ function interact() {
   refreshTouchUi();
 }
 
+let wheelPressedAt = -Infinity;
+let wheelChanged = false;
 function onLook(dx, dy) {
   if (cinematicCapture?.active || !started || menuOpen || mapOpen
-    || driving.active || cliffFall.phase !== 'grounded') return;
+    || driving.active || cliffFall.phase !== 'grounded'
+    || multiplayer.getState().self?.dead
+    || (!multiplayer.getState().room && soloHealth <= 0)) return;
+  if (combat.equipmentWheelOpen) {
+    const highlighted = combat.moveEquipmentWheel(dx, dy);
+    if (highlighted && highlighted !== combat.selectedEquipment) wheelChanged = true;
+    return;
+  }
   if (drone.active) { drone.look(dx, dy); return; }
   player.yaw -= dx * 0.0021;
   player.pitch = clamp(player.pitch - dy * 0.0021, -1.45, 1.45);
@@ -526,62 +663,926 @@ const touchControls = createTouchControls($('touch-controls'), {
     else if (action === 'map') mapOpen ? closeMap() : openMap();
     else if (action === 'interact') drone.active ? toggleDrone() : interact();
     else if (action === 'drone') toggleDrone();
+    else if (action === 'crouch') setPlayerStance(
+      togglePlayerStance(player.stance, 'crouch'));
+    else if (action === 'prone') setPlayerStance(
+      togglePlayerStance(player.stance, 'prone'));
     else if (action === 'light') { flashlightOn = !flashlightOn; flashlight.visible = flashlightOn; }
     else if (action === 'audio') toggleAudio();
   },
 });
+
+const multiplayer = createMultiplayerClient();
+const remotePlayers = createRemotePlayers(scene,
+  { groundHeight: structures.playerGroundHeight });
+const freshSoloAmmo = () => Object.fromEntries(Object.entries(WEAPONS).map(([id, weapon]) =>
+  [id, { magazine: weapon.magazine, reserve: weapon.reserve, reloadingUntil: 0 }]));
+let soloAmmo = freshSoloAmmo();
+let soloHealth = 100;
+let soloArmor = 0;
+let soloRespawnAt = 0;
+let soloProtectedUntil = 0;
+let soloInventory = createInventory();
+let currentInventory = soloInventory;
+let soloPickups = createWorldPickupSpawns(Math.floor(Math.random() * 0xffffffff));
+if (waterQaView === 'pickup') {
+  // Development sightline for end-to-end pickup/HUD checks; absent in builds.
+  soloHealth = 60;
+  soloAmmo.revolver.reserve -= 6;
+  soloPickups = [
+    { id: 'qa-armor', kind: 'armor', itemId: 'armor', x: player.x,
+      z: player.z, count: 1, source: 'world' },
+    { id: 'qa-medkit', kind: 'medkit', itemId: 'medkit', x: player.x + 0.7,
+      z: player.z, count: 1, source: 'world' },
+    { id: 'qa-ammo', kind: 'ammo', itemId: 'ammo', x: player.x + 1.4,
+      z: player.z, count: 1, source: 'world' },
+    ...soloPickups,
+  ];
+}
+let activeRoomPickups = new Map();
+let activeRoomExplosives = new Map();
+let activeRoomWildlife = new Map();
+let soloExplosives = [];
+let nextSoloExplosiveId = 1;
+let lastSoloExplosiveCheck = -Infinity;
+let lastSoloUseAt = -Infinity;
+lootWorld.sync(soloPickups);
+const soloWildlifeHealth = new Map();
+const soloNpcs = new Map([...residents.getCombatTargets(),
+  ...prisonPopulation.getCombatTargets()].map((target) => [target.id,
+  createNpcCombatant(target, target.kind,
+    target.kind === 'resident'
+      ? structures.playerGroundHeight(target.x, target.z)
+      : world.terrainHeight(target.x, target.z))]));
+const activeRoomNpcs = new Map();
+let lastSoloNpcCheck = -Infinity;
+let soloPose = null;
+let soloVehicles = null;
+let roomClock = null;
+let lastRoomHealth = null;
+let lastRoomArmor = null;
+let localAmmo = soloAmmo;
+let lastVehicleSend = -Infinity;
+let vehicleSendPending = false;
+let lastCombatVisible = false;
+let lastCombatHolstered = false;
+const lastLocalShot = Object.fromEntries(Object.keys(WEAPONS).map((id) => [id, -Infinity]));
+
+function roomServerNow() {
+  return roomClock ? roomClock.serverNow + performance.now() - roomClock.receivedAt : Date.now();
+}
+
+function resetRoomPlayer(spawn, { fade = true } = {}) {
+  driving.forceExit();
+  drone.exit();
+  player.stance = 'stand';
+  cameraEyeHeight = playerStance('stand').eyeHeight;
+  combat.setState({ stance: 'stand' });
+  player.x = spawn.x;
+  player.z = spawn.z;
+  player.pitch = -0.05;
+  cliffFall = rememberSafeGround(createCliffFallState({ x: player.x, z: player.z }),
+    { x: player.x, z: player.z }, cliffWorld, canStandAt);
+  respawnFadeTime = fade ? 0 : -1;
+  keys.clear();
+  touchControls.reset();
+  refreshTouchUi();
+}
+
+function applyRoomWorld(next) {
+  if (!next) return;
+  if (['auto', 'clear', 'mist', 'rain', 'storm'].includes(next.weather)) {
+    weatherSelect.value = next.weather;
+  }
+  if (['auto', 'dawn', 'noon', 'dusk', 'night'].includes(next.time)) {
+    timeSelect.value = next.time;
+  }
+  if (Number.isFinite(next.startedAt) && Number.isFinite(next.serverNow)) {
+    roomClock = { startedAt: next.startedAt, serverNow: next.serverNow,
+      receivedAt: performance.now() };
+  }
+}
+
+function applyRoomSnapshot(room) {
+  const selfId = multiplayer.getState().selfId;
+  remotePlayers.ingest(room, selfId);
+  driving.syncRemoteVehicles(room.vehicles);
+  applyRoomWorld({ ...room.world, serverNow: room.serverNow });
+  if (Array.isArray(room.pickups)) {
+    activeRoomPickups = new Map(room.pickups.map((item) => [item.id, item]));
+    lootWorld.sync(room.pickups);
+  }
+  if (Array.isArray(room.explosives)) {
+    activeRoomExplosives = new Map(room.explosives.map((item) => [item.id, item]));
+    combat.syncExplosives(room.explosives, room.serverNow);
+  }
+  if (Array.isArray(room.wildlife)) {
+    const changed = new Map(room.wildlife.map((animal) => [animal.id, animal]));
+    for (const id of activeRoomWildlife.keys()) {
+      if (!changed.has(id)) fauna.setAnimalAlive(id, true);
+    }
+    for (const animal of changed.values()) fauna.setAnimalAlive(animal.id, !animal.dead);
+    activeRoomWildlife = changed;
+  }
+  if (Array.isArray(room.npcs)) {
+    activeRoomNpcs.clear();
+    for (const npc of room.npcs) activeRoomNpcs.set(npc.id, npc);
+    residents.setCombatStates(room.npcs);
+    prisonPopulation.setCombatStates(room.npcs);
+  }
+  const self = room.players?.find((member) => member.id === selfId);
+  if (!self) return;
+  const lostHealth = lastRoomHealth === null ? 0
+    : Math.max(0, lastRoomHealth - self.health);
+  const lostArmor = lastRoomArmor === null ? 0
+    : Math.max(0, lastRoomArmor - (self.armor ?? 0));
+  if (lostHealth || lostArmor) {
+    combat.showDamage(lostHealth + lostArmor);
+  }
+  if (self.dead && lastRoomHealth !== 0) {
+    combat.showDeath();
+    driving.forceExit();
+    drone.exit();
+    keys.clear();
+    touchControls.reset();
+  }
+  if (!self.dead && lastRoomHealth === 0) {
+    resetRoomPlayer(self);
+    combat.showRespawn();
+  }
+  lastRoomHealth = self.health;
+  lastRoomArmor = self.armor ?? 0;
+  localAmmo = self.ammo;
+  if (self.inventory) {
+    currentInventory = createInventory(self.inventory);
+    combat.setInventory(currentInventory);
+  }
+  combat.setState({ mode: room.mode, ammo: self.ammo?.[combat.selectedWeapon],
+    health: self.health, armor: self.armor, dead: self.dead,
+    protectedUntil: self.spawnProtectedUntil,
+    respawnAt: self.respawnAvailableAt, serverNow: room.serverNow });
+}
+
+function roomCombatReady() {
+  const state = multiplayer.getState();
+  return Boolean((!state.room || state.connected) && started && !menuOpen
+    && !mapOpen && !drone.active && !driving.active && !cinematicCapture?.active
+    && cliffFall.phase === 'grounded' && !state.self?.dead
+    && (state.room || soloHealth > 0));
+}
+
+function setPlayerStance(stance, { quiet = false } = {}) {
+  if (!['stand', 'crouch', 'prone'].includes(stance) || driving.active
+    || drone.active || cliffFall.phase !== 'grounded'
+    || multiplayer.getState().self?.dead
+    || (!multiplayer.getState().room && soloHealth <= 0)) return false;
+  if (player.stance === stance) return true;
+  player.stance = stance;
+  combat.setState({ stance });
+  if (!quiet) showToast(stance === 'stand' ? 'STANDING'
+    : stance === 'crouch' ? 'CROUCHING' : 'PRONE');
+  refreshTouchUi();
+  return true;
+}
+
+function syncSoloNpcs({ restorePositions = false } = {}) {
+  if (restorePositions) {
+    residents.resetCombatStates();
+    prisonPopulation.resetCombatStates();
+  }
+  // Solo detainees keep their original subtle pacing; only room snapshots
+  // supply authoritative positions.
+  const states = [...soloNpcs.values()].map(({ x, y, z, heading, ...state }) => state);
+  residents.setCombatStates(states);
+  prisonPopulation.setCombatStates(states);
+}
+
+function refreshSoloNpcPositions() {
+  for (const target of [...residents.getCombatTargets(),
+    ...prisonPopulation.getCombatTargets()]) {
+    const npc = soloNpcs.get(target.id);
+    if (!npc || npc.dead) continue;
+    soloNpcs.set(target.id, { ...npc, x: target.x, z: target.z,
+      y: target.kind === 'resident'
+        ? structures.playerGroundHeight(target.x, target.z)
+        : world.terrainHeight(target.x, target.z) });
+  }
+}
+
+function nearestSoloNpc(origin, direction, range) {
+  let nearest = null;
+  for (const npc of soloNpcs.values()) {
+    const distance = rayNpcHit(origin, direction, npc, range);
+    if (distance === null) continue;
+    const impact = { x: origin.x + direction.x * distance,
+      y: origin.y + direction.y * distance,
+      z: origin.z + direction.z * distance };
+    if (shotBlockedByStructures(origin, impact) || shotBlockedByTerrain(origin, impact)) continue;
+    if (!nearest || distance < nearest.distance) nearest = { npc, distance };
+  }
+  return nearest;
+}
+
+function alertSoloNpcsNearShot(origin, direction, range, hitNpcId = null) {
+  let changed = false;
+  for (const npc of soloNpcs.values()) {
+    if (npc.dead || npc.alerted || npc.id === hitNpcId
+      || !npcThreatenedByShot(origin, direction, npc, range)) continue;
+    const center = { x: npc.x, y: npc.y + 1.1, z: npc.z };
+    if (shotBlockedByStructures(origin, center) || shotBlockedByTerrain(origin, center)) continue;
+    soloNpcs.set(npc.id, alertNpc(npc, 'solo'));
+    changed = true;
+  }
+  if (changed) syncSoloNpcs();
+}
+
+function hurtSoloNpc(npc, damage) {
+  if (!npc || npc.dead || damage <= 0) return false;
+  const next = applyNpcDamage(npc, damage, 'solo');
+  if (next === npc) return false;
+  soloNpcs.set(npc.id, next);
+  syncSoloNpcs();
+  if (npc.kind === 'resident') residents.showCombatHit(npc.id);
+  else prisonPopulation.showCombatHit(npc.id);
+  return true;
+}
+
+function showNpcAttack(attack) {
+  if (!attack?.origin || !attack?.target) return;
+  const resident = soloNpcs.get(attack.npcId)?.kind === 'resident'
+    || activeRoomNpcs.get(attack.npcId)?.kind === 'resident';
+  if (attack.attackKind?.endsWith('_shot')) {
+    if (resident) residents.showAttack(attack.npcId, attack.target,
+      { noProjectile: true });
+    else prisonPopulation.showAttack(attack.npcId, attack.target,
+      { noProjectile: true });
+    const shot = new THREE.Vector3(attack.target.x - attack.origin.x,
+      attack.target.y - attack.origin.y, attack.target.z - attack.origin.z);
+    if (shot.lengthSq() > 0.01) {
+      const hitDistance = shot.length();
+      combat.remoteFire({ weapon: attack.weapon || 'revolver', origin: attack.origin,
+        direction: shot.normalize(), hitDistance });
+    }
+  }
+}
+
+function updateSoloNpcCombat(now = performance.now()) {
+  if (multiplayer.getState().room || now - lastSoloNpcCheck < 100) return;
+  lastSoloNpcCheck = now;
+  refreshSoloNpcPositions();
+  if (!started || menuOpen || mapOpen || cinematicCapture?.active || drone.active
+    || driving.active || cliffFall.phase !== 'grounded' || soloHealth <= 0) return;
+  const target = { id: 'solo', x: player.x,
+    y: structures.playerGroundHeight(player.x, player.z)
+      + playerStance(player.stance).eyeHeight,
+    z: player.z, mode: 'walk', stance: player.stance, dead: false,
+    spawnProtectedUntil: soloProtectedUntil };
+  for (const npc of soloNpcs.values()) {
+    const attack = npcAttackDecision(npc, [target], now, (origin, impact) =>
+      !shotBlockedByStructures(origin, impact)
+        && !shotBlockedByTerrain(origin, impact));
+    if (!attack) continue;
+    soloNpcs.set(npc.id, { ...npc, lastAttackAt: now });
+    showNpcAttack(attack);
+    const armorDamage = Math.min(soloArmor, attack.damage);
+    const healthDamage = attack.damage - armorDamage;
+    soloArmor -= armorDamage;
+    soloHealth = Math.max(0, soloHealth - healthDamage);
+    combat.showDamage(armorDamage + healthDamage);
+    if (soloHealth === 0) {
+      soloRespawnAt = now + RESPAWN_DELAY_MS;
+      combat.showDeath();
+      keys.clear();
+      touchControls.reset();
+      showToast('YOU WERE DOWNED · RESPAWN WHEN READY');
+    }
+    combat.setState({ health: soloHealth, armor: soloArmor,
+      dead: soloHealth === 0, respawnAt: soloRespawnAt,
+      protectedUntil: soloProtectedUntil, serverNow: now });
+    if (soloHealth === 0) break;
+  }
+}
+
+function nearestSoloAnimal(origin, direction, range) {
+  let nearest = null;
+  for (const target of fauna.getTargets()) {
+    if (!target.active || !target.alive) continue;
+    const distance = rayWildlifeHit(origin, direction, target, range);
+    if (distance === null) continue;
+    const impact = { x: origin.x + direction.x * distance,
+      y: origin.y + direction.y * distance,
+      z: origin.z + direction.z * distance };
+    if (shotBlockedByStructures(origin, impact) || shotBlockedByTerrain(origin, impact)) continue;
+    if (!nearest || distance < nearest.distance) nearest = { target, distance };
+  }
+  return nearest;
+}
+
+function hurtSoloAnimal(target, damage, now = performance.now()) {
+  if (!target.active || !target.alive || damage <= 0) return false;
+  const health = Math.max(0,
+    (soloWildlifeHealth.get(target.id)?.health ?? target.maxHealth) - damage);
+  soloWildlifeHealth.set(target.id, { health,
+    respawnAt: health === 0 ? now + WILDLIFE_KINDS[target.kind].respawnMs : 0 });
+  if (health === 0) fauna.setAnimalAlive(target.id, false);
+  return true;
+}
+
+function explodeSoloItem(explosive, now = performance.now()) {
+  const config = EXPLOSIVES[explosive.kind];
+  if (!config) return;
+  const origin = { x: explosive.x, y: explosive.y + 0.15, z: explosive.z };
+  let hitAny = false;
+  for (const target of fauna.getTargets()) {
+    if (!target.active || !target.alive) continue;
+    const distance = Math.max(0,
+      Math.hypot(target.x - origin.x, target.y - origin.y, target.z - origin.z)
+        - target.radius);
+    if (distance > config.radius || shotBlockedByStructures(origin, target)
+      || shotBlockedByTerrain(origin, target)) continue;
+    hitAny = hurtSoloAnimal(target, blastDamageAt(distance, config), now) || hitAny;
+  }
+  refreshSoloNpcPositions();
+  for (const npc of soloNpcs.values()) {
+    if (npc.dead) continue;
+    const center = { x: npc.x, y: npc.y + 1.05, z: npc.z };
+    const distance = Math.max(0, Math.hypot(center.x - origin.x,
+      center.y - origin.y, center.z - origin.z) - 0.65);
+    if (distance > config.radius || shotBlockedByStructures(origin, center)
+      || shotBlockedByTerrain(origin, center)) continue;
+    hitAny = hurtSoloNpc(npc, blastDamageAt(distance, config)) || hitAny;
+  }
+  combat.showExplosion({ id: explosive.id, kind: explosive.kind,
+    position: { x: explosive.x, y: explosive.y, z: explosive.z },
+    radius: config.radius });
+  if (hitAny) combat.showHit();
+}
+
+function updateSoloExplosives(now = performance.now()) {
+  if (multiplayer.getState().room || now - lastSoloExplosiveCheck < 90) return;
+  lastSoloExplosiveCheck = now;
+  for (let index = soloExplosives.length - 1; index >= 0; index--) {
+    const explosive = soloExplosives[index];
+    const config = EXPLOSIVES[explosive.kind];
+    if (explosive.kind === 'grenade' && now < explosive.detonatesAt) continue;
+    if (explosive.kind === 'mine' && now < explosive.armedAt) continue;
+    if (explosive.kind === 'mine' && now < explosive.expiresAt) {
+      const mineOrigin = { x: explosive.x, y: explosive.y + 0.15,
+        z: explosive.z };
+      const visible = (target) => !shotBlockedByStructures(mineOrigin, target)
+        && !shotBlockedByTerrain(mineOrigin, target);
+      const triggered = fauna.getTargets().some((target) => target.active && target.alive
+        && Math.hypot(target.x - explosive.x, target.z - explosive.z)
+          <= config.triggerRadius + target.radius && visible(target))
+        || [...soloNpcs.values()].some((npc) => !npc.dead
+          && Math.hypot(npc.x - explosive.x, npc.z - explosive.z)
+            <= config.triggerRadius + 0.65
+          && visible({ x: npc.x, y: npc.y + 1.05, z: npc.z }));
+      if (!triggered) continue;
+    }
+    soloExplosives.splice(index, 1);
+    if (explosive.kind === 'mine' && now >= explosive.expiresAt) {
+      combat.removeExplosive(explosive.id);
+    } else explodeSoloItem(explosive, now);
+  }
+}
+
+function settleSoloReloads(now = performance.now()) {
+  if (multiplayer.getState().room) return;
+  for (const [id, ammo] of Object.entries(soloAmmo)) {
+    if (!ammo.reloadingUntil || ammo.reloadingUntil > now) continue;
+    const amount = Math.min(WEAPONS[id].magazine - ammo.magazine, ammo.reserve);
+    ammo.magazine += amount;
+    ammo.reserve -= amount;
+    ammo.reloadingUntil = 0;
+    if (combat.selectedWeapon === id) combat.setState({ ammo, serverNow: now });
+  }
+}
+
+function settleSoloWildlife(now = performance.now()) {
+  if (multiplayer.getState().room) return;
+  for (const [id, state] of soloWildlifeHealth) {
+    if (!state.respawnAt || state.respawnAt > now) continue;
+    soloWildlifeHealth.delete(id);
+    fauna.setAnimalAlive(id, true);
+  }
+}
+
+async function fireWeapon() {
+  if (!roomCombatReady() || !GUN_IDS.includes(combat.selectedEquipment)
+    || !currentInventory.guns.includes(combat.selectedEquipment)) return;
+  const inRoom = Boolean(multiplayer.getState().room);
+  const weapon = combat.selectedEquipment;
+  const ammunition = localAmmo?.[weapon];
+  const now = performance.now();
+  if (!ammunition || ammunition.magazine < 1
+    || ammunition.reloadingUntil > (inRoom ? roomServerNow() : now)
+    || now - lastLocalShot[weapon] < WEAPONS[weapon].fireIntervalMs) return;
+  lastLocalShot[weapon] = now;
+  const origin = { x: camera.position.x, y: camera.position.y, z: camera.position.z };
+  const view = camera.getWorldDirection(new THREE.Vector3()).normalize();
+  const direction = { x: view.x, y: view.y, z: view.z };
+  localAmmo = { ...localAmmo, [weapon]: { ...ammunition, magazine: ammunition.magazine - 1 } };
+  if (!inRoom) {
+    soloAmmo[weapon] = localAmmo[weapon];
+    soloProtectedUntil = Math.min(soloProtectedUntil, now);
+  }
+  combat.setState({ ammo: localAmmo[weapon], serverNow: inRoom ? roomServerNow() : now,
+    ...(!inRoom ? { protectedUntil: soloProtectedUntil } : {}) });
+  if (!inRoom) refreshSoloNpcPositions();
+  const animalHit = inRoom ? null : nearestSoloAnimal(origin, direction, WEAPONS[weapon].range);
+  const npcHit = inRoom ? null : nearestSoloNpc(origin, direction, WEAPONS[weapon].range);
+  const firstHit = !animalHit || (npcHit && npcHit.distance < animalHit.distance)
+    ? npcHit : animalHit;
+  combat.fire({ weapon, origin, direction, local: true,
+    hitDistance: firstHit?.distance });
+  if (!inRoom) {
+    if (firstHit === npcHit && npcHit) {
+      if (hurtSoloNpc(npcHit.npc, WEAPONS[weapon].damage)) combat.showHit();
+    } else if (firstHit === animalHit && animalHit) {
+      if (hurtSoloAnimal(animalHit.target, WEAPONS[weapon].damage, now)) combat.showHit();
+    }
+    alertSoloNpcsNearShot(origin, direction, firstHit?.distance ?? WEAPONS[weapon].range,
+      firstHit === npcHit ? npcHit?.npc.id : null);
+    return;
+  }
+  try {
+    const result = await multiplayer.request('combat:fire', { weapon, origin, direction });
+    localAmmo = { ...localAmmo, [weapon]: result.ammo };
+    combat.setState({ ammo: result.ammo });
+    if (result.hit) {
+      if (Number.isFinite(result.hit.distance)) {
+        combat.confirmLocalHit(result.hit.distance, { weapon, origin });
+      }
+      combat.showHit();
+    }
+  } catch (error) {
+    showToast(error.message, 1700);
+  }
+}
+
+async function reloadWeapon() {
+  if (!roomCombatReady() || !GUN_IDS.includes(combat.selectedEquipment)) return;
+  const weapon = combat.selectedEquipment;
+  if (!multiplayer.getState().room) {
+    settleSoloReloads();
+    const ammo = soloAmmo[weapon];
+    if (!ammo.reserve || ammo.magazine === WEAPONS[weapon].magazine
+      || ammo.reloadingUntil) return;
+    ammo.reloadingUntil = performance.now() + WEAPONS[weapon].reloadMs;
+    localAmmo = soloAmmo;
+    combat.setState({ ammo, serverNow: performance.now() });
+    return;
+  }
+  try {
+    const result = await multiplayer.request('combat:reload', { weapon });
+    localAmmo = { ...localAmmo, [weapon]: result.ammo };
+    combat.setState({ ammo: result.ammo });
+  } catch (error) { showToast(error.message, 1700); }
+}
+
+function selectEquipment(id) {
+  const owned = id === 'unarmed' ? true
+    : GUN_IDS.includes(id) ? currentInventory.guns.includes(id)
+    : id === 'grenade' ? currentInventory.grenades > 0
+      : id === 'mine' && currentInventory.mines > 0;
+  if (!owned || !combat.selectEquipment(id)) {
+    showToast(`${ITEM_DEFINITIONS[id]?.label?.toUpperCase() || 'ITEM'} UNAVAILABLE`, 1400);
+    return false;
+  }
+  if (GUN_IDS.includes(id)) {
+    currentInventory = { ...currentInventory, selectedGun: id };
+    if (!multiplayer.getState().room) soloInventory = currentInventory;
+    else void multiplayer.request('inventory:select', { weapon: id })
+      .then((result) => { currentInventory = createInventory(result.inventory); })
+      .catch((error) => showToast(error.message, 1700));
+    combat.setState({ ammo: localAmmo?.[id] });
+  }
+  return true;
+}
+
+function selectWeapon(weapon) { return selectEquipment(weapon); }
+
+async function useEquipment(requestedKind = combat.selectedEquipment) {
+  if (!roomCombatReady() || !['grenade', 'mine'].includes(requestedKind)
+    || combat.selectedEquipment !== requestedKind
+    || currentInventory[requestedKind === 'grenade' ? 'grenades' : 'mines'] < 1) return;
+  const kind = requestedKind;
+  const now = performance.now();
+  if (!multiplayer.getState().room && now - lastSoloUseAt < 350) return;
+  const view = camera.getWorldDirection(new THREE.Vector3());
+  const horizontal = new THREE.Vector2(view.x, view.z).normalize();
+  if (!Number.isFinite(horizontal.x) || !Number.isFinite(horizontal.y)) return;
+  const distance = kind === 'grenade' ? clamp(12 + view.y * 11, 6, 23) : 1.8;
+  const target = { x: player.x + horizontal.x * distance,
+    z: player.z + horizontal.y * distance };
+  if (kind === 'mine' && (!world.isWalkable(target.x, target.z)
+    || world.isLake(target.x, target.z, 0.6)
+    || world.coastalRadius(target.x, target.z) >= 0.955)) {
+    showToast('CHOOSE SOLID GROUND FOR THE MINE', 1800);
+    return;
+  }
+  if (multiplayer.getState().room) {
+    try {
+      const result = await multiplayer.request('combat:use', { kind, target });
+      currentInventory = createInventory(result.inventory);
+      combat.setInventory(currentInventory);
+    } catch (error) { showToast(error.message, 1800); }
+    return;
+  }
+  if (soloExplosives.length >= 8) {
+    showToast('TOO MANY ACTIVE EXPLOSIVES', 1800);
+    return;
+  }
+  const nextInventory = consumeItem(soloInventory, kind);
+  if (nextInventory === soloInventory) return;
+  lastSoloUseAt = now;
+  soloProtectedUntil = Math.min(soloProtectedUntil, now);
+  soloInventory = nextInventory;
+  currentInventory = soloInventory;
+  combat.setInventory(currentInventory);
+  combat.setState({ protectedUntil: soloProtectedUntil, serverNow: now });
+  const config = EXPLOSIVES[kind];
+  const explosive = { id: `solo-${nextSoloExplosiveId++}`, kind, ownerId: 'solo',
+    x: target.x, y: world.terrainHeight(target.x, target.z) + 0.25, z: target.z,
+    createdAt: now, radius: config.radius,
+    ...(kind === 'grenade' ? { detonatesAt: now + config.fuseMs }
+      : { armedAt: now + config.armMs, expiresAt: now + config.ttlMs }) };
+  soloExplosives.push(explosive);
+  if (kind === 'grenade') combat.showExplosiveThrow({ id: explosive.id, kind,
+    origin: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+    target: { x: explosive.x, y: explosive.y, z: explosive.z } });
+  else combat.showMinePlacement({ id: explosive.id, kind,
+    position: { x: explosive.x, y: explosive.y, z: explosive.z } });
+}
+
+function activateSelectedEquipment() {
+  if (combat.equipmentWheelOpen) return;
+  if (GUN_IDS.includes(combat.selectedEquipment)) void fireWeapon();
+  else void useEquipment(combat.selectedEquipment);
+}
+
+async function respawnRoomPlayer() {
+  const self = multiplayer.getState().self;
+  if (!self?.dead || roomServerNow() < self.respawnAvailableAt) return;
+  try {
+    const result = await multiplayer.request('player:respawn');
+    resetRoomPlayer(result.spawn);
+    lastRoomHealth = result.health;
+    lastRoomArmor = result.armor;
+    localAmmo = result.ammo;
+    if (result.inventory) {
+      currentInventory = createInventory(result.inventory);
+      combat.setInventory(currentInventory);
+    }
+    combat.setState({ health: result.health, armor: result.armor, dead: false,
+      protectedUntil: result.spawnProtectedUntil, ammo: result.ammo?.[combat.selectedWeapon] });
+    combat.showRespawn();
+    showToast('RETURNED TO SAFE GROUND');
+  } catch (error) { showToast(error.message); }
+}
+
+function respawnPlayer() {
+  if (multiplayer.getState().room) {
+    void respawnRoomPlayer();
+    return;
+  }
+  const now = performance.now();
+  if (soloHealth > 0 || now < soloRespawnAt) return;
+  const safe = SAFE_SPAWNS.filter((spawn) => world.isWalkable(spawn.x, spawn.z)
+    && !world.isLake(spawn.x, spawn.z, PLAYER_RADIUS)
+    && canStandAt(spawn.x, spawn.z));
+  const closestThreat = (spawn) => Math.min(500,
+    ...[...soloNpcs.values()].filter((npc) => !npc.dead && npc.alerted)
+      .map((npc) => Math.hypot(npc.x - spawn.x, npc.z - spawn.z)));
+  const spawn = safe.sort((a, b) => closestThreat(b) - closestThreat(a))[0]
+    || { x: 0, z: 270 };
+  resetRoomPlayer(spawn);
+  soloHealth = 100;
+  soloArmor = 0;
+  soloRespawnAt = 0;
+  soloProtectedUntil = now + SPAWN_PROTECTION_MS;
+  combat.setState({ health: soloHealth, armor: soloArmor, dead: false,
+    protectedUntil: soloProtectedUntil, respawnAt: 0,
+    ammo: soloAmmo[combat.selectedWeapon], serverNow: now });
+  combat.showRespawn();
+  showToast('RETURNED TO SAFE GROUND');
+}
+
+const combat = createCombatPresentation({ camera, scene, root: document.body,
+  mobile: touchEnabled, onFire: fireWeapon, onReload: reloadWeapon,
+  onAim: (aiming) => combat.setAim(aiming), onSelectWeapon: selectWeapon,
+  onSelectEquipment: selectEquipment, onUseEquipment: useEquipment,
+  onRespawn: respawnPlayer });
+combat.setInventory(soloInventory);
+combat.setState({ mode: 'solo', ammo: localAmmo.revolver,
+  health: soloHealth, armor: soloArmor, stance: player.stance,
+  serverNow: performance.now() });
+syncSoloNpcs();
+createMultiplayerRoomUI({ client: multiplayer });
+multiplayer.on('joined', (state) => {
+  climateSampleTime = -Infinity;
+  fauna.resetAnimals();
+  soloExplosives = [];
+  if (!soloPose) {
+    soloPose = { x: player.x, z: player.z, yaw: player.yaw,
+      pitch: player.pitch, stance: player.stance,
+      weather: weatherSelect.value, time: timeSelect.value };
+    soloVehicles = driving.snapshot();
+  }
+  const self = state.self;
+  if (self) resetRoomPlayer(self, { fade: false });
+  applyRoomSnapshot(state.room);
+  showToast(`JOINED ${state.mode === 'pvp' ? 'PVP' : 'EXPLORE'} ROOM ${state.code}`);
+});
+multiplayer.on('snapshot', applyRoomSnapshot);
+multiplayer.on('loot', (event) => {
+  if (!multiplayer.getState().room || !event?.pickup?.id) return;
+  if (event.action === 'remove') activeRoomPickups.delete(event.pickup.id);
+  else if (event.action === 'spawn' || event.action === 'update') {
+    activeRoomPickups.set(event.pickup.id, event.pickup);
+  }
+  lootWorld.sync([...activeRoomPickups.values()]);
+});
+multiplayer.on('explosive', (event) => {
+  if (!multiplayer.getState().room || !event?.explosive?.id) return;
+  if (event.action === 'remove') activeRoomExplosives.delete(event.explosive.id);
+  else if (event.action === 'spawn') {
+    activeRoomExplosives.set(event.explosive.id, event.explosive);
+  }
+  combat.syncExplosives([...activeRoomExplosives.values()], roomServerNow());
+});
+multiplayer.on('wildlife', (animal) => {
+  if (!animal?.id) return;
+  fauna.setAnimalAlive(animal.id, !animal.dead);
+  if (animal.dead) activeRoomWildlife.set(animal.id, animal);
+  else activeRoomWildlife.delete(animal.id);
+});
+multiplayer.on('npc', (npc) => {
+  if (!multiplayer.getState().room || !npc?.id) return;
+  activeRoomNpcs.set(npc.id, npc);
+  const states = [...activeRoomNpcs.values()];
+  residents.setCombatStates(states);
+  prisonPopulation.setCombatStates(states);
+});
+multiplayer.on('world', applyRoomWorld);
+multiplayer.on('combat', (event) => {
+  const selfId = multiplayer.getState().selfId;
+  if (event.kind === 'shot' && event.shooterId !== selfId) combat.remoteFire({
+    weapon: event.weapon, origin: event.origin, direction: event.direction, hit: event.hit,
+  });
+  if (event.kind === 'throw') combat.showExplosiveThrow({ id: event.id,
+    kind: event.itemKind, origin: event.origin, target: event.position });
+  if (event.kind === 'place') combat.showMinePlacement({ id: event.id,
+    kind: event.itemKind, position: event.position });
+  if (event.kind === 'explosion') combat.showExplosion({ id: event.id,
+    kind: event.itemKind, position: event.position, radius: event.radius });
+  if (event.kind === 'npc_hit') {
+    const npc = activeRoomNpcs.get(event.npcId);
+    if (npc?.kind === 'resident') residents.showCombatHit(event.npcId);
+    else prisonPopulation.showCombatHit(event.npcId);
+  }
+  if (event.kind === 'npc_attack') {
+    showNpcAttack(event);
+    if (event.targetId === selfId) {
+      combat.showDamage((event.armorDamage || 0) + (event.healthDamage || 0));
+      lastRoomHealth = event.health;
+      lastRoomArmor = event.armor;
+      combat.setState({ health: event.health, armor: event.armor, dead: event.dead });
+    }
+  }
+  if (event.kind === 'hit' && event.targetId === selfId) {
+    combat.showDamage(event.damage);
+    lastRoomHealth = event.health;
+    lastRoomArmor = event.armor;
+    combat.setState({ health: event.health, armor: event.armor, dead: event.dead });
+  }
+  if (event.kind === 'death' && event.playerId === selfId) {
+    combat.showDeath();
+    combat.setState({ health: 0, armor: 0, dead: true,
+      respawnAt: event.respawnAvailableAt });
+    lastRoomHealth = 0;
+    lastRoomArmor = 0;
+    driving.forceExit();
+    drone.exit();
+    keys.clear();
+    touchControls.reset();
+    showToast('YOU WERE DOWNED · RESPAWN WHEN READY');
+  }
+  if (event.kind === 'respawn' && event.playerId === selfId) {
+    resetRoomPlayer(event.spawn);
+    combat.showRespawn();
+  }
+});
+multiplayer.on('left', () => {
+  remotePlayers.clear();
+  driving.forceExit();
+  driving.clearRemoteVehicles();
+  if (soloVehicles) driving.restore(soloVehicles, () => true);
+  soloVehicles = null;
+  roomClock = null;
+  climateSampleTime = -Infinity;
+  lastRoomHealth = null;
+  lastRoomArmor = null;
+  localAmmo = soloAmmo;
+  currentInventory = soloInventory;
+  combat.setInventory(soloInventory);
+  activeRoomPickups.clear();
+  activeRoomExplosives.clear();
+  activeRoomWildlife.clear();
+  activeRoomNpcs.clear();
+  lootWorld.sync(soloPickups);
+  combat.syncExplosives(soloExplosives, performance.now());
+  fauna.resetAnimals();
+  for (const [id, state] of soloWildlifeHealth) {
+    if (state.health === 0) fauna.setAnimalAlive(id, false);
+  }
+  syncSoloNpcs({ restorePositions: true });
+  combat.setState({ active: false, mode: 'solo', ammo: localAmmo[combat.selectedWeapon],
+    health: soloHealth, armor: soloArmor, dead: soloHealth === 0,
+    protectedUntil: soloProtectedUntil, respawnAt: soloRespawnAt,
+    serverNow: performance.now() });
+  if (soloPose) {
+    Object.assign(player, { x: soloPose.x, z: soloPose.z, yaw: soloPose.yaw,
+      pitch: soloPose.pitch, stance: soloPose.stance });
+    cameraEyeHeight = playerStance(player.stance).eyeHeight;
+    combat.setState({ stance: player.stance });
+    weatherSelect.value = soloPose.weather;
+    timeSelect.value = soloPose.time;
+    soloPose = null;
+    storeSettings();
+  }
+  cliffFall = rememberSafeGround(createCliffFallState({ x: player.x, z: player.z }),
+    { x: player.x, z: player.z }, cliffWorld, canStandAt);
+  showToast('LEFT PRIVATE ROOM · SOLO EXPLORATION');
+});
+if (multiplayer.getState().savedSession) {
+  // Reconnect while assets are still loading, before a slow world load can
+  // consume the server's grace period.
+  void multiplayer.resumeRoom().catch((error) => {
+    console.info('Saved room could not be resumed:', error.message);
+  });
+}
 function refreshTouchUi() {
   const landscape = innerWidth >= innerHeight;
   $('touch-rotate').hidden = !touchEnabled || landscape || !started;
   touchControls.setVisible(!captureEnabled && touchEnabled && landscape
-    && started && !menuOpen && !mapOpen);
+    && started && !menuOpen && !mapOpen && !multiplayer.getState().self?.dead
+    && (multiplayer.getState().room || soloHealth > 0));
   if (!touchEnabled) return;
   const mode = drone.active ? 'drone' : driving.active ? 'driving' : 'walking';
   touchControls.setMode(mode);
+  for (const [id, selected] of [
+    ['touch-crouch', player.stance === 'crouch'],
+    ['touch-prone', player.stance === 'prone'],
+  ]) {
+    const button = $(id);
+    if (button.classList.contains('pressed') !== selected) {
+      button.classList.toggle('pressed', selected);
+    }
+  }
   const nearby = !drone.active && !driving.active ? nearbyInteraction() : null;
   touchControls.setAction(drone.active ? 'EXIT DRONE' : driving.active ? 'EXIT CAR'
-    : nearby?.kind === 'vehicle' ? 'DRIVE' : nearby?.person ? 'TALK' : 'USE',
+    : nearby?.kind === 'vehicle' ? 'DRIVE' : nearby?.kind === 'loot' ? 'PICK UP'
+      : nearby?.person ? 'TALK' : 'USE',
   drone.active || driving.active || Boolean(nearby));
   $('touch-drone-toggle').textContent = drone.active ? 'EXIT DRONE' : 'DRONE';
 }
 
 window.addEventListener('keydown', (event) => {
   if (cinematicCapture?.active) return;
-  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(event.code)
     && started && !menuOpen) event.preventDefault();
   if (event.code === 'Escape') {
-    if (mapOpen) closeMap();
+    if (combat.equipmentWheelOpen) combat.closeEquipmentWheel({ commit: false });
+    else if (mapOpen) closeMap();
     else if (menuOpen && started) closeMenu();
     else openMenu();
     return;
   }
-  if (menuOpen || !started || mapOpen || event.repeat) return;
+  if (menuOpen || !started || mapOpen) return;
+  if (multiplayer.getState().self?.dead
+    || (!multiplayer.getState().room && soloHealth <= 0)) {
+    if (event.code === 'Space') respawnPlayer();
+    return;
+  }
+  if (combat.equipmentWheelOpen
+    && ['ArrowLeft', 'ArrowRight', 'KeyA', 'KeyD'].includes(event.code)) {
+    combat.rotateEquipmentWheel(['ArrowLeft', 'KeyA'].includes(event.code) ? -1 : 1);
+    wheelChanged = true;
+    return;
+  }
+  if (event.repeat) return;
   if (event.code === 'KeyM') { openMap(); return; }
   if (event.code === 'KeyG') { toggleDrone(); return; }
   if (event.code === 'KeyE') { interact(); return; }
+  if (['Tab', 'KeyQ'].includes(event.code) && roomCombatReady()) {
+    if (combat.openEquipmentWheel()) {
+      wheelPressedAt = performance.now();
+      wheelChanged = false;
+    }
+    return;
+  }
+  if (event.code === 'KeyH' && roomCombatReady()) {
+    combat.closeEquipmentWheel({ commit: false });
+    selectEquipment(combat.selectedEquipment === 'unarmed'
+      ? (currentInventory.guns.includes(combat.selectedWeapon)
+        ? combat.selectedWeapon : currentInventory.guns[0]) : 'unarmed');
+    return;
+  }
+  if (event.code === 'KeyC') {
+    setPlayerStance(togglePlayerStance(player.stance, 'crouch'));
+    return;
+  }
+  if (event.code === 'KeyZ') {
+    setPlayerStance(togglePlayerStance(player.stance, 'prone'));
+    return;
+  }
+  if (event.code === 'KeyR' && roomCombatReady()) { void reloadWeapon(); return; }
+  if (['Digit1', 'Digit2', 'Digit3'].includes(event.code) && roomCombatReady()) {
+    selectEquipment(currentInventory.guns[Number(event.code.at(-1)) - 1]); return;
+  }
+  if (event.code === 'Digit4' && roomCombatReady()) { selectEquipment('grenade'); return; }
+  if (event.code === 'Digit5' && roomCombatReady()) { selectEquipment('mine'); return; }
   if (event.code === 'KeyF') { flashlightOn = !flashlightOn; flashlight.visible = flashlightOn; return; }
   if (event.code === 'KeyU') { toggleAudio(); return; }
   keys.add(event.code);
 });
-window.addEventListener('keyup', (event) => keys.delete(event.code));
+window.addEventListener('keyup', (event) => {
+  keys.delete(event.code);
+  if (['Tab', 'KeyQ'].includes(event.code)) {
+    if (started && !menuOpen && !mapOpen && !event.repeat) event.preventDefault();
+    if (combat.equipmentWheelOpen && !wheelChanged
+      && performance.now() - wheelPressedAt < 200) combat.rotateEquipmentWheel(1);
+    combat.closeEquipmentWheel({ commit: true });
+    wheelPressedAt = -Infinity;
+    wheelChanged = false;
+  }
+});
 let mouseDragging = false;
+let fallbackPointerStart = null;
 window.addEventListener('blur', () => {
   keys.clear(); touchControls.reset(); mouseDragging = false;
+  fallbackPointerStart = null;
+  combat.setAim(false);
+  combat.closeEquipmentWheel({ commit: false });
 });
 renderer.domElement.addEventListener('pointerdown', (event) => {
+  if (event.pointerType === 'mouse' && event.button === 2 && roomCombatReady()
+    && GUN_IDS.includes(combat.selectedEquipment) && !combat.equipmentWheelOpen) {
+    event.preventDefault();
+    combat.setAim(true);
+  }
+  if (event.pointerType === 'mouse' && event.button === 0
+    && document.pointerLockElement === renderer.domElement
+    && roomCombatReady()) {
+    activateSelectedEquipment();
+  }
   if (!touchEnabled && event.pointerType === 'mouse' && event.button === 0) {
     mouseDragging = true;
+    fallbackPointerStart = { x: event.clientX, y: event.clientY, moved: false };
   }
 });
-window.addEventListener('pointerup', () => { mouseDragging = false; });
+window.addEventListener('pointerup', (event) => {
+  if (event.pointerType === 'mouse' && event.button === 0
+    && pointerLockFallback && fallbackPointerStart && !fallbackPointerStart.moved
+    && Math.hypot(event.clientX - fallbackPointerStart.x,
+      event.clientY - fallbackPointerStart.y) < 8 && roomCombatReady()) {
+    activateSelectedEquipment();
+  }
+  mouseDragging = false;
+  fallbackPointerStart = null;
+  if (event.button === 2) combat.setAim(false);
+});
+renderer.domElement.addEventListener('contextmenu', (event) => {
+  if (roomCombatReady()) event.preventDefault();
+});
+let lastEquipmentWheelAt = -Infinity;
+renderer.domElement.addEventListener('wheel', (event) => {
+  if (!roomCombatReady()) return;
+  event.preventDefault();
+  const now = performance.now();
+  if (now - lastEquipmentWheelAt < 100) return;
+  lastEquipmentWheelAt = now;
+  if (combat.equipmentWheelOpen) {
+    combat.rotateEquipmentWheel(Math.sign(event.deltaY) || 1);
+    wheelChanged = true;
+  } else combat.cycleEquipment(Math.sign(event.deltaY) || 1);
+}, { passive: false });
 document.addEventListener('pointerlockerror', () => {
   if (started && !menuOpen && !mapOpen && !touchEnabled) {
+    pointerLockFallback = true;
     showToast('MOUSE CAPTURE BLOCKED · DRAG TO LOOK OR CLICK GAME TO RETRY');
   }
+});
+document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement === renderer.domElement) pointerLockFallback = false;
 });
 document.addEventListener('mousemove', (event) => {
   if (document.pointerLockElement === renderer.domElement) onLook(event.movementX, event.movementY);
   else if (mouseDragging && (event.buttons & 1) && event.target === renderer.domElement) {
+    if (fallbackPointerStart && Math.hypot(event.clientX - fallbackPointerStart.x,
+      event.clientY - fallbackPointerStart.y) >= 8) fallbackPointerStart.moved = true;
     onLook(event.movementX, event.movementY);
   }
 });
@@ -618,9 +1619,18 @@ function frame(now) {
       weatherOverride: showcaseShot.weatherOverride,
       timeOverride: showcaseShot.timeOverride,
     });
+  } else if (roomClock && multiplayer.getState().room) {
+    elapsed = Math.max(0, (roomServerNow() - roomClock.startedAt) / 1000);
   } else elapsed += dt;
   const active = started && !menuOpen && !mapOpen;
-  const playerControlsActive = active && !cinematicCapture?.active;
+  const roomState = multiplayer.getState();
+  if (!roomState.room) {
+    settleSoloReloads(now);
+    settleSoloWildlife(now);
+  }
+  const playerControlsActive = active && !cinematicCapture?.active
+    && (!roomState.room || roomState.connected) && !roomState.self?.dead
+    && (roomState.room || soloHealth > 0);
   const inputDt = active ? dt : 0;
   ambientElapsed += inputDt;
   if (!showcaseShot && elapsed - climateSampleTime >= 0.05) {
@@ -636,6 +1646,11 @@ function frame(now) {
   const previousZ = player.z;
 
   if (active && cliffFall.phase !== 'grounded') {
+    if (player.stance !== 'stand') {
+      player.stance = 'stand';
+      cameraEyeHeight = playerStance('stand').eyeHeight;
+      combat.setState({ stance: 'stand' });
+    }
     const tick = advanceCliffFall(cliffFall, dt, cliffWorld, canStandAt);
     cliffFall = tick.state;
     if (tick.event === 'impact') sound.playFallImpact();
@@ -647,6 +1662,12 @@ function frame(now) {
       keys.clear();
       touchControls.reset();
       showToast('RETURNED TO SAFE GROUND');
+      if (roomState.connected) {
+        const recovered = { x: player.x, z: player.z,
+          y: structures.playerGroundHeight(player.x, player.z) + CLIFF_FALL.eyeHeight };
+        void multiplayer.request('player:recover', recovered)
+          .catch((error) => console.warn('Room cliff recovery rejected:', error.message));
+      }
     }
   }
   if (respawnFadeTime >= 0 && active) {
@@ -679,7 +1700,9 @@ function frame(now) {
       const side = clamp(Number(keys.has('KeyD')) - Number(keys.has('KeyA')) + controls.sideways, -1, 1);
       const magnitude = Math.hypot(forward, side);
       if (magnitude > 0) {
-        const speed = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 7.3 : 4.6;
+        const stance = playerStance(player.stance);
+        const speed = keys.has('ShiftLeft') || keys.has('ShiftRight')
+          ? stance.runSpeed : stance.walkSpeed;
         const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
         const rx = Math.cos(player.yaw), rz = -Math.sin(player.yaw);
         const vx = (fx * forward + rx * side) / magnitude;
@@ -688,6 +1711,19 @@ function frame(now) {
         if (cliffFall.phase === 'grounded') tryPlayerStep(player.x, player.z + vz * speed * dt);
         player.walkPhase += dt * (speed > 5 ? 11 : 8);
       }
+    }
+  }
+  if (roomState.room) {
+    driving.updateRemoteVehicles(dt);
+    if (roomState.connected && driving.active && !vehicleSendPending
+      && now - lastVehicleSend >= 100) {
+      lastVehicleSend = now;
+      vehicleSendPending = true;
+      const vehicle = driving.active;
+      void multiplayer.request('vehicle:state', { id: vehicle.id, x: vehicle.x,
+        z: vehicle.z, heading: vehicle.heading, speed: vehicle.speed })
+        .catch((error) => console.warn('Vehicle sync rejected:', error.message))
+        .finally(() => { vehicleSendPending = false; });
     }
   }
   if (active && !driving.active && !drone.active && cliffFall.phase === 'grounded'
@@ -719,13 +1755,41 @@ function frame(now) {
   } else if (drone.active) {
     drone.applyToCamera(camera);
   } else {
+    const desiredEyeHeight = playerStance(player.stance).eyeHeight;
+    cameraEyeHeight += (desiredEyeHeight - cameraEyeHeight)
+      * Math.min(1, dt * 10);
     const walking = inputDt > 0 && Math.hypot(player.x - previousX, player.z - previousZ) > 0.001;
-    const bob = walking ? Math.sin(player.walkPhase) * 0.035 : 0;
+    const bob = walking ? Math.sin(player.walkPhase) * (player.stance === 'stand'
+      ? 0.035 : player.stance === 'crouch' ? 0.018 : 0.008) : 0;
     camera.position.set(player.x,
-      structures.playerGroundHeight(player.x, player.z) + CLIFF_FALL.eyeHeight + bob,
+      structures.playerGroundHeight(player.x, player.z) + cameraEyeHeight + bob,
       player.z);
     orientFirstPersonCamera(camera, player.yaw, player.pitch);
   }
+
+  if (roomState.room && started) {
+    const pose = drone.active ? drone.pose() : null;
+    multiplayer.sendPlayerState({ x: pose?.x ?? player.x,
+      y: pose?.y ?? (driving.active ? camera.position.y
+        : structures.playerGroundHeight(player.x, player.z)
+          + playerStance(player.stance).eyeHeight), z: pose?.z ?? player.z,
+      yaw: pose?.yaw ?? (driving.active?.heading ?? player.yaw),
+      pitch: pose?.pitch ?? player.pitch,
+      mode: drone.active ? 'drone' : driving.active ? 'drive' : 'walk',
+      stance: player.stance,
+      vehicleId: driving.active?.id || null });
+  }
+  if (roomState.room) remotePlayers.update(now, dt, camera);
+  const combatVisible = Boolean(started && !menuOpen && !mapOpen
+    && !cinematicCapture?.active && (!roomState.room || roomState.connected));
+  const combatHolstered = Boolean(driving.active || drone.active
+    || cliffFall.phase !== 'grounded');
+  if (combatVisible !== lastCombatVisible || combatHolstered !== lastCombatHolstered) {
+    combat.setState({ active: combatVisible, holstered: combatHolstered });
+    lastCombatVisible = combatVisible;
+    lastCombatHolstered = combatHolstered;
+  }
+  combat.update(dt, { moving: Math.hypot(player.x - previousX, player.z - previousZ) > 0.01 });
 
   if (cliffFall.phase !== 'grounded') {
     fallPresentation.update(dt, { phase: cliffFall.phase === 'impact' ? 'impact' : 'falling',
@@ -749,12 +1813,17 @@ function frame(now) {
   harborProps.update(camera, elapsed, climate.rain);
   fireAtmosphere.update(elapsed, { weather, cameraPosition: camera.position });
   prisonPopulation.update(ambientElapsed, { weather, camera,
-    shadowLight: world.shadowLight });
+    shadowLight: world.shadowLight, playerX: player.x, playerZ: player.z,
+    dt: inputDt });
   residents.update(ambientElapsed, { dt: inputDt, cameraX: camera.position.x,
     cameraZ: camera.position.z, playerX: player.x, playerZ: player.z,
     windDirection: climate.windDirection, windSpeed: climate.windSpeed });
-  const faunaCue = fauna.update(inputDt, ambientElapsed, weather,
-    { playerX: camera.position.x, playerZ: camera.position.z, indoors: sheltered });
+  const faunaCue = fauna.update(inputDt, roomState.room ? elapsed : ambientElapsed, weather,
+    { playerX: camera.position.x, playerZ: camera.position.z,
+      indoors: sheltered, multiplayer: Boolean(roomState.room) });
+  updateSoloNpcCombat(now);
+  updateSoloExplosives(now);
+  lootWorld.update(dt, elapsed, camera);
   rainEffects.update(dt, elapsed, climate, { indoors: sheltered });
   wetWindows.update(dt, climate);
   pumpInterior.update(dt, { generatorOn: true, pumpOn: true }, 0.2);
@@ -783,11 +1852,21 @@ function frame(now) {
   if (driving.active) $('vehicle-hud').textContent = `${driving.active.type.toUpperCase()} · ${Math.round(Math.abs(driving.active.speed) * 3.6)} KM/H`;
   $('drone-hud').hidden = !drone.active;
   if (drone.active) $('drone-altitude').textContent = `${Math.round(camera.position.y - world.waterHeight(camera.position.x, camera.position.z))} M ABOVE SEA`;
+  const stanceHud = $('stance-hud');
+  stanceHud.hidden = !started || menuOpen || mapOpen || driving.active || drone.active
+    || player.stance === 'stand';
+  const stanceText = player.stance === 'crouch' ? 'CROUCHING · C TO STAND'
+    : 'PRONE · Z TO STAND';
+  if (!stanceHud.hidden && stanceHud.textContent !== stanceText) {
+    stanceHud.textContent = stanceText;
+  }
   const nearby = !driving.active && !drone.active ? nearbyInteraction() : null;
   $('interaction').hidden = !started || menuOpen || mapOpen || drone.active
+    || roomState.self?.dead || (!roomState.room && soloHealth <= 0)
     || (!driving.active && !nearby);
   if (driving.active) $('interaction').textContent = 'E · EXIT VEHICLE';
   else if (nearby?.kind === 'vehicle') $('interaction').textContent = `E · DRIVE ${nearby.vehicle.type.toUpperCase()}`;
+  else if (nearby?.kind === 'loot') $('interaction').textContent = `E · PICK UP ${nearby.item.label.toUpperCase()}`;
   else if (nearby?.person) $('interaction').textContent = `E · TALK TO ${nearby.person.name.toUpperCase()} · ${nearby.person.role.toUpperCase()}`;
   if (touchEnabled && started && !menuOpen && !mapOpen) refreshTouchUi();
   if (!$('toast').hidden && now >= toastUntil) $('toast').hidden = true;
