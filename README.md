@@ -2,7 +2,7 @@
 
 An explorable coastal island built with Three.js and Blender assets. This project is a reusable world foundation: the terrain, weather, buildings, roads, vehicles, wildlife, ambient residents, ambience, and exploration controls are present, while campaign progression and story objectives are absent.
 
-**Play Island World:** [islandworld-3ccb4.web.app](https://islandworld-3ccb4.web.app/). Firebase Hosting serves the game files. Private online rooms require a separately hosted HTTPS/WSS room server and a client build configured with `VITE_ISLAND_SERVER_URL`.
+**Play Island World:** [islandworld-3ccb4.web.app](https://islandworld-3ccb4.web.app/). Firebase Hosting serves the game, and the private-room server runs on [Render Free](https://islandworld-room-server.onrender.com/healthz). The public server URL is saved in `.env.production` for repeatable Firebase builds.
 
 The source project remains in its own folder. This folder can be developed and built independently.
 
@@ -53,7 +53,7 @@ Open **Private Multiplayer** in the menu, enter a name, then create an **Explore
 | Collect nearby pickup | E | PICK UP |
 | Respawn after defeat | Space or RESPAWN | RESPAWN |
 
-The two clients need to reach the same room server. Localhost on a friend's computer refers to their computer, so different-network play requires an online HTTPS/WSS room host and a client build configured with `VITE_ISLAND_SERVER_URL`. See [`MULTIPLAYER_SERVER.md`](MULTIPLAYER_SERVER.md) for hosting, origin, and persistence details. The Firebase site does not currently have an online room server; its room menu explains this while the solo game remains playable.
+The two clients need to reach the same room server. Localhost on a friend's computer refers to their computer; the Firebase build uses the Render HTTPS/WSS server configured in `.env.production` so friends on different networks can join the same room. See [`MULTIPLAYER_SERVER.md`](MULTIPLAYER_SERVER.md) for hosting, origin, and persistence details. Render Free sleeps after inactivity, so the first room connection may take time. A server restart ends in-memory rooms.
 
 ## Firebase Hosting
 
@@ -67,7 +67,7 @@ firebase login:use rawatadarsh2763@gmail.com
 firebase deploy --only hosting --project islandworld-3ccb4
 ```
 
-The hosted site is `https://islandworld-3ccb4.web.app/`. Before publishing multiplayer, configure `VITE_ISLAND_SERVER_URL` to the separately hosted HTTPS room server, add this exact Hosting origin to `ISLAND_ALLOWED_ORIGINS`, and verify both clients from different networks. Keep the bundled asset source and license notices in `public/` when making future builds.
+The hosted site is `https://islandworld-3ccb4.web.app/`. Production builds read the public `VITE_ISLAND_SERVER_URL` in `.env.production`; Render allows both Firebase Hosting origins through `ISLAND_ALLOWED_ORIGINS`. Keep the bundled asset source and license notices in `public/` when making future builds.
 
 ## Explore
 

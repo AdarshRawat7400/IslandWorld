@@ -14,6 +14,22 @@ const request = (socket, event, data = {}) => new Promise((resolve, reject) => {
 });
 const pause = (ms = 45) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function waitForCombatEvent(socket, matches, timeoutMs = 1500) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.off('combat:event', onEvent);
+      reject(new Error('Timed out waiting for combat event'));
+    }, timeoutMs);
+    function onEvent(event) {
+      if (!matches(event)) return;
+      clearTimeout(timeout);
+      socket.off('combat:event', onEvent);
+      resolve(event);
+    }
+    socket.on('combat:event', onEvent);
+  });
+}
+
 async function fixture(t, mode = 'pvp') {
   let now = 3_000_000;
   const server = createMultiplayerServer({ host: '127.0.0.1', port: 0,
@@ -274,8 +290,10 @@ test('timed grenade applies server damage, drops carried gear, and respawns with
   game.advance(EXPLOSIVES.grenade.fuseMs - 1);
   await pause();
   assert.equal(victim.health, 25, 'fuse must expire before damage');
+  const explosionReceived = waitForCombatEvent(game.secondSocket,
+    (event) => event.kind === 'explosion' && event.id === used.explosive.id);
   game.advance(1);
-  await pause();
+  await explosionReceived;
   assert.equal(victim.dead, true);
   assert.equal(game.room.explosives.size, 0);
   assert.ok(events.some((event) => event.kind === 'hit' && event.targetId === victim.id

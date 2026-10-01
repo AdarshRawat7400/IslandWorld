@@ -23,12 +23,11 @@ The browser client uses `VITE_ISLAND_SERVER_URL` at build time. For example, set
 
 ## Deploy the room server on Render Free
 
-The repository includes [`render.yaml`](render.yaml) for one **Free** Node web service. In Render, connect the private IslandWorld GitHub repository and create a Blueprint from this file. It runs `npm ci --omit=dev`, starts `npm run server`, and checks `/healthz`. The server binds to `0.0.0.0` and uses Render's `PORT`; the Blueprint allows both Firebase Hosting origins. Do not add a database or change the plan to a paid tier for this setup. A manual Render Web Service can use the same settings if Blueprint access is unavailable.
+The deployed service is `islandworld-room-server` on Render's **Free** plan at `https://islandworld-room-server.onrender.com`. It is connected to the private IslandWorld GitHub repository, runs `npm ci` and `npm run server`, and checks `/healthz`. The server binds to `0.0.0.0` and uses Render's `PORT`; both Firebase Hosting origins are allowed. [`render.yaml`](render.yaml) records an equivalent Free Blueprint for rebuilding this service in a fresh workspace. Do not create a second service for the existing deployment.
 
-After Render reports the service live, check `https://<your-service>.onrender.com/healthz`. Then build the Firebase client with `VITE_ISLAND_SERVER_URL` set to the exact Render HTTPS origin (no path or trailing slash) and deploy its `dist/` folder. The environment variable is captured **during the Vite build**, so changing it on Render alone will not update an existing Firebase release. In PowerShell:
+Check the [live health endpoint](https://islandworld-room-server.onrender.com/healthz). The source-controlled `.env.production` contains the public Render HTTPS origin. Vite captures it **during the production build**, so rebuild before deploying Firebase's `dist/` folder. In PowerShell:
 
 ```powershell
-$env:VITE_ISLAND_SERVER_URL = 'https://<your-service>.onrender.com'
 npm run build
 firebase deploy --only hosting --project islandworld-3ccb4
 ```
