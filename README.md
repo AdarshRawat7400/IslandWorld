@@ -139,8 +139,10 @@ The existing WebGL2 cloud renderer uses one locally generated 48³ density textu
 ## Vintage night lamps
 
 Greywake has 68 original cast-iron lanterns along road verges, landing paths,
-entrances and lake approaches. Warm glass sources fade on at dusk and switch off
-in daylight; rain changes the metal and glass roughness. Nearby lamps illuminate
+entrances and lake approaches. Lamps stay off whenever the sun is above the
+horizon, including bright dawn/dusk and overcast weather. Warm glass sources
+fade on below the horizon after sunset; rain changes the metal and glass
+roughness. Nearby lamps illuminate
 the actual roads, grass and buildings with soft falloff. Lamp bases block walking
 and driving, while road lanes and building entrances stay clear.
 

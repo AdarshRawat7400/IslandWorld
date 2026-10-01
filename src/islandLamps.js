@@ -47,8 +47,16 @@ export function lampRenderBudget(profile = {}) {
     shadowMapSize: desktop ? 512 : 256, reach: LIGHT_REACH });
 }
 
-/** Dusk photocells switch on gradually. Clouds alone cannot switch on at noon. */
+/** Follow the sun, not sky brightness: overcast daylight must stay unlit. */
 export function lampActivationForClimate(climate = {}) {
+  if (Number.isFinite(climate.sunDirection?.y)) {
+    // The weather clock's daylight is an eased rendering factor, not a
+    // day/night flag. It is low even just ABOVE the horizon at dawn/dusk.
+    // Only illuminate below sunset; fade through roughly six degrees of
+    // twilight. Weather/cloud cover cannot override this daylight cutoff.
+    return 1 - smooth(-0.10, 0, climate.sunDirection.y);
+  }
+  // Keep compatibility for standalone callers without the celestial clock.
   const daylight = Number.isFinite(climate.daylight)
     ? clamp(climate.daylight, 0, 1) : 1;
   const night = Number.isFinite(climate.night) ? clamp(climate.night, 0, 1) : 0;
@@ -376,7 +384,10 @@ export function createIslandLamps(scene, { terrainHeight, groundHeight = terrain
     const frameSeconds = Number.isFinite(dt) ? Math.max(0, dt) : 0;
     const target = lampActivationForClimate(climate);
     const previous = brightness;
-    brightness += (target - brightness) * (1 - Math.exp(-frameSeconds * 2.1));
+    // A manual clock jump from night to day must not leave a bright pool
+    // lingering through a slow fade (or many seconds of low frame rate).
+    if (Number.isFinite(climate.sunDirection?.y) && climate.sunDirection.y >= 0) brightness = 0;
+    else brightness += (target - brightness) * (1 - Math.exp(-frameSeconds * 2.1));
     if (Math.abs(brightness - target) < 0.0001) brightness = target;
     const moisture = Number.isFinite(climate.wetness) ? climate.wetness
       : Number.isFinite(climate.groundWetness) ? climate.groundWetness : climate.rain || 0;

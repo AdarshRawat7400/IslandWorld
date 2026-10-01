@@ -6,6 +6,7 @@ import { createIslandLamps, lampActivationForClimate, lampRenderBudget,
 import { islandTerrainHeightAt, islandCoastalRadiusAt } from '../src/world.js';
 import { isLake } from '../src/inlandLake.js';
 import { isRoad } from '../src/roads.js';
+import { createDynamicWeather } from '../src/dynamicWeather.js';
 
 const world = { terrainHeight: islandTerrainHeightAt, isLake,
   isWalkable: (x, z) => islandCoastalRadiusAt(x, z) < 0.955,
@@ -56,6 +57,70 @@ test('day, storm noon, dusk and night photocell levels are bounded and gradual',
   const twilight = lampActivationForClimate({ daylight: 0.25, cloudCover: 0.7, night: 0.15 });
   assert.ok(twilight > 0.15 && twilight < 1);
   assert.equal(lampActivationForClimate({ daylight: -10, night: 10 }), 1);
+});
+
+test('the actual weather clock keeps lamps off whenever the sun is above the horizon', () => {
+  const weatherClock = createDynamicWeather();
+  for (const weatherOverride of ['clear', 'mist', 'rain', 'storm', 'dawn']) {
+    for (const timeOverride of ['dawn', 'noon', 'dusk', '06:45', '17:15']) {
+      const climate = weatherClock.sample(0, { weatherOverride, timeOverride });
+      assert.ok(climate.sunDirection.y >= 0, `${weatherOverride} / ${timeOverride}`);
+      assert.equal(lampActivationForClimate(climate), 0,
+        `sunlit ${weatherOverride} / ${timeOverride} must not light the ground`);
+      assert.equal(lampActivationForClimate({ ...climate, daylight: 0, night: 1 }), 0,
+        'the solar position takes precedence over contradictory legacy light levels');
+    }
+  }
+});
+
+test('the actual weather clock brings lamps on smoothly below the horizon independently of clouds', () => {
+  const weatherClock = createDynamicWeather();
+  const hours = [17.65, 17.75, 18, 18.5];
+  const activations = hours.map((hour) => {
+    const clear = weatherClock.sample(0, { weatherOverride: 'clear', timeOverride: hour });
+    const storm = weatherClock.sample(0, { weatherOverride: 'storm', timeOverride: hour });
+    assert.ok(clear.sunDirection.y < 0);
+    const activation = lampActivationForClimate(clear);
+    assert.equal(lampActivationForClimate(storm), activation,
+      'rain and storm cloud cover do not advance the night-lamp switch');
+    return activation;
+  });
+  assert.ok(activations[0] > 0 && activations[0] < activations[1]);
+  assert.ok(activations[1] < activations[2] && activations[2] < 1);
+  assert.equal(activations[3], 1);
+  assert.equal(lampActivationForClimate(weatherClock.sample(0, { timeOverride: 'night' })), 1);
+  assert.equal(lampActivationForClimate({ sunDirection: { y: 0 }, night: 1, daylight: 0 }), 0);
+});
+
+test('a genuine night-to-day change extinguishes the pooled lights and both emitting materials', () => {
+  const weatherClock = createDynamicWeather();
+  const lamps = createIslandLamps(new THREE.Scene(), world);
+  const camera = new THREE.PerspectiveCamera();
+  const near = lamps.definitions.find((lamp) => lamp.id === 'keeper-east');
+  camera.position.set(near.x - 4, near.y + 2, near.z + 5);
+  const flags = lamps.lightPool.map((light) => ({ visible: light.visible, castShadow: light.castShadow }));
+  try {
+    lamps.update(5, 0, weatherClock.sample(0, { timeOverride: 'night', weatherOverride: 'storm' }), camera);
+    assert.ok(lamps.getState().activeLights > 0);
+    assert.ok(lamps.meshes.bulb.material.emissiveIntensity > 0);
+    assert.ok(lamps.meshes.glass.material.emissiveIntensity > 0);
+    for (const timeOverride of ['dawn', 'noon', 'dusk']) {
+      lamps.update(5, 1, weatherClock.sample(1, { timeOverride: 'night', weatherOverride: 'storm' }), camera);
+      assert.ok(lamps.getState().activeLights > 0);
+      lamps.update(1 / 60, 1 + 1 / 60,
+        weatherClock.sample(1 + 1 / 60, { timeOverride, weatherOverride: 'storm' }), camera);
+      assert.equal(lamps.getState().brightness, 0, `${timeOverride}: off in the first rendered frame`);
+      assert.equal(lamps.getState().activeLights, 0);
+      assert.equal(lamps.getState().shadowUpdates, 0);
+      assert.equal(lamps.meshes.bulb.material.emissiveIntensity, 0);
+      assert.equal(lamps.meshes.glass.material.emissiveIntensity, 0);
+      assert.ok(lamps.lightPool.every((light) => light.intensity === 0 && !light.shadow.autoUpdate));
+      assert.equal(lamps.lightPool.length, 4);
+      assert.deepEqual(lamps.lightPool.map((light) => ({ visible: light.visible, castShadow: light.castShadow })), flags);
+    }
+  } finally {
+    lamps.dispose();
+  }
 });
 
 test('fixtures use four instanced draws and constant pooled lights/shadow shader flags', () => {
