@@ -103,6 +103,24 @@ preserves solo exploration. No real microphone was captured for these checks.
 Real-device microphone/headset and different-network checks are separate from
 mocked unit checks and local generated-audio verification.
 
+### Published relay verification (2026-10-02)
+
+The existing Render room server is configured for the dedicated IslandWorld
+LiveKit Cloud project on the free Build plan. Agent observability is disabled;
+no card or paid subscription was added. Only server environment variables and
+an ignored local testing file hold the credentials.
+
+Two independent session identities on the Firebase origin joined the deployed
+Render server and exchanged decoded generated audio through LiveKit Cloud in
+both directions. The online checks verified listen-only joins, push-to-talk
+standby/transmit/release, stopped media after mute, and same-identity reconnect
+with microphone off. A third identity joined from the actual published game
+and displayed the matching three-player voice roster. The temporary generated
+audio test page is removed after verification. The creator left while the
+remaining clients stayed connected; leaving every test client removed both the
+game room and the Cloud room. No real microphone was captured.
+Real phones, headsets, and callers on separate networks still need field testing.
+
 ## Sources and licenses
 
 - [LiveKit JavaScript SDK](https://github.com/livekit/client-sdk-js), Apache 2.0.

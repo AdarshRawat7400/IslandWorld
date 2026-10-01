@@ -63,8 +63,10 @@ in the menu, then explicitly enable the microphone. Desktop supports **V**
 push-to-talk and open microphone; mobile voice controls stay inside **MORE**.
 Individual mute, deafen, volume, speaking indicators, and privacy-safe reconnects
 are included. See [`VOICE_CHAT.md`](VOICE_CHAT.md) for hosting and verification.
-The gameplay server needs LiveKit credentials before online voice can connect;
-unconfigured voice never blocks gameplay.
+The published IslandWorld server is configured for LiveKit Cloud's free Build
+plan. Fresh server installations need their own LiveKit credentials;
+unconfigured voice never blocks gameplay. No credentials are included in Git
+or Firebase assets.
 
 ## Firebase Hosting
 
