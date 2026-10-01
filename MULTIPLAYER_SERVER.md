@@ -16,10 +16,24 @@ Set these environment variables before starting the server when needed:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ISLAND_SERVER_HOST` | `0.0.0.0` | Network interface to listen on |
-| `ISLAND_SERVER_PORT` | `3001` | TCP port |
+| `ISLAND_SERVER_PORT` | `PORT` when set, otherwise `3001` | TCP port; Render supplies `PORT` automatically |
 | `ISLAND_ALLOWED_ORIGINS` | local browser origins only | Comma-separated, exact client origins allowed to connect |
 
-The browser client uses `VITE_ISLAND_SERVER_URL` at build time. For example, set it to `http://127.0.0.1:3001` for a local test. A public HTTPS game requires a public **HTTPS/WSS** server URL and its exact game origin in `ISLAND_ALLOWED_ORIGINS`. Firebase Hosting serves static files and does not run this persistent room process. Host the Node server separately behind TLS and a reverse proxy that permits WebSocket upgrades. This repository does not provision, deploy, or enable a paid server.
+The browser client uses `VITE_ISLAND_SERVER_URL` at build time. For example, set it to `http://127.0.0.1:3001` for a local test. A public HTTPS game requires a public **HTTPS/WSS** server URL and its exact game origin in `ISLAND_ALLOWED_ORIGINS`. Firebase Hosting serves static files and does not run this persistent room process.
+
+## Deploy the room server on Render Free
+
+The repository includes [`render.yaml`](render.yaml) for one **Free** Node web service. In Render, connect the private IslandWorld GitHub repository and create a Blueprint from this file. It runs `npm ci --omit=dev`, starts `npm run server`, and checks `/healthz`. The server binds to `0.0.0.0` and uses Render's `PORT`; the Blueprint allows both Firebase Hosting origins. Do not add a database or change the plan to a paid tier for this setup. A manual Render Web Service can use the same settings if Blueprint access is unavailable.
+
+After Render reports the service live, check `https://<your-service>.onrender.com/healthz`. Then build the Firebase client with `VITE_ISLAND_SERVER_URL` set to the exact Render HTTPS origin (no path or trailing slash) and deploy its `dist/` folder. The environment variable is captured **during the Vite build**, so changing it on Render alone will not update an existing Firebase release. In PowerShell:
+
+```powershell
+$env:VITE_ISLAND_SERVER_URL = 'https://<your-service>.onrender.com'
+npm run build
+firebase deploy --only hosting --project islandworld-3ccb4
+```
+
+Render Free may sleep after inactivity; its first connection can take time to wake. Rooms and reconnect tokens are memory-only, so a Render restart or redeploy ends every active room. Keep this service to one instance unless room state is moved to a shared store and Socket.IO routing is configured accordingly. Test two browsers from different networks before calling public multiplayer live.
 
 Room and reconnect tokens are kept in memory. Restarting the process closes all rooms; use a shared state store and sticky routing before running multiple server instances. Room codes are access-by-code rather than account authentication; do not treat them as a place to store secrets.
 

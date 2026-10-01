@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: islandworld-room-server
+    runtime: node
+    plan: free
+    buildCommand: npm ci --omit=dev
+    startCommand: npm run server
+    healthCheckPath: /healthz
+    envVars:
+      - key: ISLAND_ALLOWED_ORIGINS
+        value: https://islandworld-3ccb4.web.app,https://islandworld-3ccb4.firebaseapp.com

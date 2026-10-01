@@ -1070,7 +1070,8 @@ export function createMultiplayerServer({
 
 if (process.argv[1] && new URL(import.meta.url).pathname.replace(/^\//, '').toLowerCase()
   === process.argv[1].replace(/\\/g, '/').replace(/^\//, '').toLowerCase()) {
-  const port = Number(process.env.ISLAND_SERVER_PORT || 3001);
+  // Render supplies PORT; keep the IslandWorld override for local installations.
+  const port = Number(process.env.ISLAND_SERVER_PORT || process.env.PORT || 3001);
   const host = process.env.ISLAND_SERVER_HOST || '0.0.0.0';
   const allowedOrigins = (process.env.ISLAND_ALLOWED_ORIGINS || '').split(',').map((s) => s.trim())
     .filter(Boolean);
