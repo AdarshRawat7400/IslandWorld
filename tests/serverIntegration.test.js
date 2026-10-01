@@ -102,6 +102,8 @@ test('two isolated Socket.IO identities agree on driving, combat, respawn, mode 
   const corpse = await observe(a, 'room:snapshot', (snap) =>
     snap.players.find((p) => p.id === joined.selfId)?.dead === true);
   assert.equal(corpse.players.find((p) => p.id === joined.selfId).health, 0);
+  assert.equal(corpse.players.find((p) => p.id === joined.selfId).deadAt, now,
+    'late joiners receive the authoritative death time for a settled corpse');
   assert.equal((await request(b, 'player:respawn')).error, 'respawn_unavailable');
   now += RESPAWN_DELAY_MS;
   const respawned = await request(b, 'player:respawn');

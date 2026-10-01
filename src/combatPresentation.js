@@ -1045,7 +1045,8 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
   fireButton.style.cssText += `width:58px;height:58px;min-width:58px;min-height:58px;
     padding:0;border-radius:50%;background:#5b342bc4;font-size:11px;
     grid-column:2;grid-row:1;`;
-  const aimButton = makeButton(doc, 'AIM', 'Hold to aim');
+  const aimButton = makeButton(doc, 'AIM', 'Toggle aim');
+  aimButton.setAttribute('aria-pressed', 'false');
   const reloadButton = makeButton(doc, 'RELOAD', 'Reload weapon');
   const wheelButton = makeButton(doc, 'WHEEL', 'Open equipment wheel');
   for (const [button, id] of [[aimButton, 'combat-aim'],
@@ -1112,58 +1113,61 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
   let reloadVisualKey = null;
   let reloadVisualEnd = 0;
   let mobileTriggerHeld = false;
+  let mobileTriggerPointerId = null;
   let disposed = false;
   let rifleAssetStatus = 'fallback';
   let revolverAssetStatus = 'fallback';
   let handAssetStatus = 'fallback';
-  let aiming = false;
   let statusSeconds = -1;
   const oldCrosshair = doc.getElementById('crosshair');
   const previousCrosshairOpacity = oldCrosshair?.style.opacity ?? '';
 
   const handleFire = (event) => {
     event.preventDefault();
-    if (state.dead || !state.active || state.holstered || wheelOpen
+    if (disposed || state.dead || !state.active || state.holstered || wheelOpen
       || selectedEquipment === 'unarmed') return;
     if (selectedEquipment === 'grenade' || selectedEquipment === 'mine') {
       const count = selectedEquipment === 'grenade' ? inventory.grenades : inventory.mines;
       if (count > 0) onUseEquipment(selectedEquipment);
     } else {
+      // AIM is a toggle, so a second thumb can press FIRE independently.
+      // Only the pointer that began a held trigger may release it.
+      if (mobileTriggerHeld || fireButton.disabled) return;
       fireButton.setPointerCapture?.(event.pointerId);
+      mobileTriggerPointerId = event.pointerId;
       mobileTriggerHeld = true;
       onTriggerChange(true);
       onFire();
     }
   };
-  const releaseTrigger = () => {
+  const releaseTrigger = (event) => {
     if (!mobileTriggerHeld) return;
+    if (event?.pointerId !== undefined && mobileTriggerPointerId !== null
+      && event.pointerId !== mobileTriggerPointerId) return;
+    const pointerId = mobileTriggerPointerId;
     mobileTriggerHeld = false;
+    mobileTriggerPointerId = null;
     onTriggerChange(false);
+    if (pointerId !== null && fireButton.hasPointerCapture?.(pointerId)) {
+      fireButton.releasePointerCapture?.(pointerId);
+    }
   };
   const handleReload = (event) => {
     releaseTrigger();
     event.preventDefault();
-    if (!wheelOpen && isWeapon(selectedEquipment)) onReload();
+    if (!disposed && !wheelOpen && isWeapon(selectedEquipment)) onReload();
   };
   const handleWheelButton = (event) => {
     event.preventDefault();
     if (wheelOpen) closeEquipmentWheel({ commit: false });
     else openEquipmentWheel();
   };
-  const handleAimStart = (event) => {
+  const handleAimToggle = (event) => {
     event.preventDefault();
-    if (wheelOpen || selectedEquipment === 'unarmed') return;
-    aimButton.setPointerCapture?.(event.pointerId);
-    aiming = true;
-    setAiming(true);
-    onAim(true);
-  };
-  const handleAimEnd = (event) => {
-    event.preventDefault();
-    if (!aiming) return;
-    aiming = false;
-    setAiming(false);
-    onAim(false);
+    if (disposed || aimButton.disabled || !state.active || state.dead || state.holstered
+      || wheelOpen || !isWeapon(selectedEquipment)) return;
+    setAiming(!state.aiming);
+    onAim(state.aiming);
   };
   fireButton.addEventListener('pointerdown', handleFire);
   for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
@@ -1175,10 +1179,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     event.preventDefault();
     if (state.dead && state.serverNow >= state.respawnAt) onRespawn();
   });
-  aimButton.addEventListener('pointerdown', handleAimStart);
-  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
-    aimButton.addEventListener(type, handleAimEnd);
-  }
+  aimButton.addEventListener('click', handleAimToggle);
   for (let index = 0; index < slotButtons.length; index += 1) {
     slotButtons[index].addEventListener('pointerenter', () => {
       if (!wheelOpen) return;
@@ -1265,6 +1266,10 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     reloadButton.disabled = wheelOpen || unarmed || explosive || state.reloading || state.reserve === 0
       || state.magazine >= WEAPONS[state.weapon].magazine;
     aimButton.disabled = wheelOpen || unarmed || explosive;
+    aimButton.textContent = state.aiming ? 'AIM ON' : 'AIM';
+    aimButton.setAttribute('aria-pressed', String(state.aiming));
+    aimButton.style.background = state.aiming ? '#72522bdf' : '#0b2028a8';
+    aimButton.style.borderColor = state.aiming ? '#ffdf96' : '#e8ddba7c';
     fireButton.textContent = explosive ? 'USE' : 'FIRE';
     fireButton.setAttribute('aria-label', explosive
       ? `Use ${selectedEquipment}` : 'Fire weapon');
@@ -1309,11 +1314,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     wheelOpen = true;
     wheelHighlight = available.includes(selectedEquipment) ? selectedEquipment : available[0];
     wheelVector.x = wheelVector.y = 0;
-    if (aiming || state.aiming) {
-      aiming = false;
-      state.aiming = false;
-      onAim(false);
-    }
+    clearAiming();
     renderHud();
     return true;
   }
@@ -1374,6 +1375,9 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
       : selectedEquipment === 'mine' ? inventory.mines : 1;
     if ((isWeapon(selectedEquipment) && !inventory.guns.includes(selectedEquipment))
       || heldCount <= 0) {
+      releaseTrigger();
+      clearAiming();
+      cancelReloadPresentation();
       selectedEquipment = inventory.guns.includes(state.weapon) ? state.weapon
         : inventory.guns[0] ?? (inventory.grenades > 0 ? 'grenade'
           : inventory.mines > 0 ? 'mine' : 'unarmed');
@@ -1403,7 +1407,8 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     if (next.spawnProtectedUntil !== undefined) merged.protectedUntil = next.spawnProtectedUntil;
     if (next.respawnAvailableAt !== undefined) merged.respawnAt = next.respawnAvailableAt;
     state = normalizeCombatHudState(merged);
-    if (selectedEquipment === 'unarmed') state.aiming = false;
+    if (newWeapon !== previousWeapon || !isWeapon(selectedEquipment)
+      || !state.active || state.dead || state.holstered) clearAiming();
     if (!state.active || state.dead || state.holstered) {
       wheelOpen = false;
       releaseTrigger();
@@ -1424,13 +1429,24 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
 
   function setAiming(value) {
     if (disposed) return;
-    state.aiming = wheelOpen || selectedEquipment === 'unarmed'
-      ? false : Boolean(value);
+    const next = Boolean(value) && state.active && !state.dead && !state.holstered
+      && !wheelOpen && isWeapon(selectedEquipment);
+    if (state.aiming === next) return;
+    state.aiming = next;
+    renderHud();
+  }
+
+  function clearAiming() {
+    if (!state.aiming) return;
+    state.aiming = false;
+    onAim(false);
   }
 
   function selectWeapon(weapon) {
     if (!isWeapon(weapon) || disposed || !inventory.guns.includes(weapon)) return false;
-    if (selectedEquipment !== weapon) { releaseTrigger(); cancelReloadPresentation(); }
+    if (selectedEquipment !== weapon) {
+      releaseTrigger(); clearAiming(); cancelReloadPresentation();
+    }
     selectedEquipment = weapon;
     setState({ weapon });
     return true;
@@ -1444,7 +1460,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     selectedEquipment = id;
     releaseTrigger();
     cancelReloadPresentation();
-    state.aiming = false;
+    clearAiming();
     if (id === 'unarmed') {
       recoil = 0;
       flashTime = 0;
@@ -1546,6 +1562,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     if (disposed) return;
     state.dead = true;
     releaseTrigger();
+    clearAiming();
     cancelReloadPresentation();
     renderHud();
   }
@@ -1605,8 +1622,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
       statusSeconds = second;
       renderHud();
     }
-    if (aimOverride !== undefined) state.aiming = selectedEquipment === 'unarmed'
-      ? false : Boolean(aimOverride);
+    if (aimOverride !== undefined) setAiming(aimOverride);
     const moveTarget = moving ? clamp(finite(speed, 3.2) / 4, 0, 1.7) : 0;
     motionAmount += (moveTarget - motionAmount) * (1 - Math.exp(-step * 9));
     const sprintTarget = state.aiming || state.reloading ? 0 : clamp(finite(sprintFactor), 0, 1);
@@ -1676,6 +1692,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
   function dispose() {
     if (disposed) return;
     releaseTrigger();
+    clearAiming();
     cancelReloadPresentation();
     disposed = true;
     hud.remove();

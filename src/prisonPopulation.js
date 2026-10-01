@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { PRISON_LAYOUT } from './setDressing.js';
 import { createNpcAttackPresentation } from './npcAttackPresentation.js';
+import { createHumanReaction, advanceHumanReaction, resetHumanReaction,
+  triggerHumanHit } from './humanCombatReaction.js';
 
 // The former annex has a small staffed holding wing. These occupants are
 // ambient island residents with no associated objectives or plot state.
@@ -330,7 +332,8 @@ export function createPrisonPopulation(scene, terrainHeight) {
     spawnX: person.x, spawnZ: person.z, spawnHeading: person.heading,
     xNow: person.x, zNow: person.z, index,
     health: 100, maxHealth: 100, dead: false, alerted: false,
-    collapse: 0, authoritativePosition: false, attackFaceRemaining: 0,
+    collapse: 0, reaction: createHumanReaction(index), combatPose: null,
+    authoritativePosition: false, attackFaceRemaining: 0,
     attackTarget: null,
   }));
   const peopleById = new Map(people.map((person) => [person.id, person]));
@@ -353,6 +356,13 @@ export function createPrisonPopulation(scene, terrainHeight) {
     return { part, mesh };
   });
   const dummy = new THREE.Object3D();
+  const partPosition = new THREE.Vector3();
+  const bodyAxis = new THREE.Vector3();
+  const bodyRotation = new THREE.Quaternion();
+  const yawRotation = new THREE.Quaternion();
+  const partRotation = new THREE.Quaternion();
+  const localEuler = new THREE.Euler();
+  const yAxis = new THREE.Vector3(0, 1, 0);
   const spatial = new THREE.Sphere(new THREE.Vector3(
     (PRISON_LAYOUT.bounds.minX + PRISON_LAYOUT.bounds.maxX) / 2,
     48,
@@ -391,8 +401,8 @@ export function createPrisonPopulation(scene, terrainHeight) {
     cues.update(dt);
     const storm = context.weather === 'storm' || context.storm === true;
     for (const person of people) {
-      person.collapse = person.dead ? Math.min(1, person.collapse + dt * 2.9)
-        : Math.max(0, person.collapse - dt * 3.4);
+      person.combatPose = advanceHumanReaction(person.reaction, dt, person.dead);
+      person.collapse = person.combatPose.collapse;
       person.attackFaceRemaining = Math.max(0, person.attackFaceRemaining - dt);
       const guard = person.kind === 'guard';
       const phase = elapsed * (guard ? 0.47 : 0.62) + person.index * 1.73;
@@ -420,24 +430,38 @@ export function createPrisonPopulation(scene, terrainHeight) {
         const yaw = person.dead ? person.heading : person.alerted ? faceYaw
           : person.heading + Math.sin(phase * 0.4) * (guard ? 0.035 : 0.075)
             + (looking ? Math.sin(phase * 0.55) * (guard ? 0.14 : 0.21) : 0);
-        const c = Math.cos(yaw), s = Math.sin(yaw);
-        const fall = person.collapse * 1.43;
-        const cosFall = Math.cos(fall), sinFall = Math.sin(fall);
+        const reaction = person.combatPose;
+        bodyAxis.set(reaction.fallZ, 0, -reaction.fallX);
+        bodyRotation.setFromAxisAngle(bodyAxis, reaction.angle);
+        yawRotation.setFromAxisAngle(yAxis, yaw);
         for (let side = 0; side < part.multiplicity; side++) {
           const sign = part.id === 'buttons' ? side - 1 : side === 0 ? -1 : 1;
-          const [lx, ly, lz, sx, sy, sz, lean] = posePart(part.id, sign,
+          let [lx, ly, lz, sx, sy, sz, lean] = posePart(part.id, sign,
             guard, phase, breath, person.alerted && !person.dead);
-          const fallenY = ly * cosFall - lz * sinFall;
-          const fallenZ = ly * sinFall + lz * cosFall;
-          dummy.position.set(person.xNow + lx * c + fallenZ * s,
-            person.baseY + fallenY,
-            person.zNow - lx * s + fallenZ * c);
-          dummy.rotation.set(fall + (part.id === 'arms' && sign > 0
+          let bend = 0;
+          if (part.id === 'legs') {
+            ly -= reaction.knee * 0.045;
+            lz += reaction.knee * 0.09;
+            bend = -reaction.knee * 0.42;
+          } else if (part.id === 'boots') lz += reaction.knee * 0.18;
+          else if (part.id === 'arms' || part.id === 'cuffs' || part.id === 'hands') {
+            lx += sign * reaction.flail * (part.id === 'hands' ? 0.15 : 0.085);
+            ly += reaction.flail * 0.095;
+            bend = reaction.flail * -0.3 - reaction.collapse * 0.08;
+          } else if (looking) bend = reaction.hit * 0.1;
+          partPosition.set(lx, ly * reaction.scaleY, lz)
+            .applyQuaternion(bodyRotation).applyQuaternion(yawRotation);
+          dummy.position.set(person.xNow + partPosition.x,
+            person.baseY + reaction.rootOffset + partPosition.y,
+            person.zNow + partPosition.z);
+          localEuler.set(bend + (part.id === 'arms' && sign > 0
             && person.alerted && !person.dead ? 0.75 : 0),
-          yaw, lean * (1 - person.collapse), 'YXZ');
+          0, lean * (1 - person.collapse), 'YXZ');
+          partRotation.setFromEuler(localEuler);
+          dummy.quaternion.copy(yawRotation).multiply(bodyRotation).multiply(partRotation);
           dummy.scale.set(part.id === 'torso' ? sx * (0.93 + (person.index % 4) * 0.045)
             : part.id === 'lapels' ? sx * sign : sx,
-            sy, sz);
+            sy * reaction.scaleY, sz);
           dummy.updateMatrix();
           mesh.setMatrixAt(person.index * part.multiplicity + side, dummy.matrix);
         }
@@ -493,15 +517,21 @@ export function createPrisonPopulation(scene, terrainHeight) {
     for (const state of Array.isArray(states) ? states : Object.values(states || {})) {
       const person = peopleById.get(state?.id);
       if (!person) continue;
-      if (Number.isFinite(state.x) && Number.isFinite(state.z)) {
+      const nextDead = typeof state.dead === 'boolean' ? state.dead
+        : Number.isFinite(state.health) ? state.health <= 0 : person.dead;
+      if (!(person.dead && nextDead) && Number.isFinite(state.x) && Number.isFinite(state.z)) {
         person.x = state.x;
         person.z = state.z;
         person.baseY = Number.isFinite(state.y)
           ? state.y + 0.15 : terrainHeight(state.x, state.z) + 0.15;
         person.authoritativePosition = true;
       }
-      if (Number.isFinite(state.heading)) person.heading = state.heading;
-      if (Number.isFinite(state.health)) person.health = Math.max(0, state.health);
+      if (!(person.dead && nextDead) && Number.isFinite(state.heading)) person.heading = state.heading;
+      if (Number.isFinite(state.health)) {
+        if (state.health < person.health && !person.dead) triggerHumanHit(person.reaction,
+          { damage: person.health - state.health, heading: person.heading });
+        person.health = Math.max(0, state.health);
+      }
       if (Number.isFinite(state.maxHealth)) person.maxHealth = Math.max(1, state.maxHealth);
       if (typeof state.dead === 'boolean') person.dead = state.dead;
       else if (Number.isFinite(state.health)) person.dead = state.health <= 0;
@@ -520,16 +550,24 @@ export function createPrisonPopulation(scene, terrainHeight) {
       person.dead = person.alerted = false;
       person.authoritativePosition = false;
       person.collapse = 0;
+      resetHumanReaction(person.reaction);
       person.targetId = null;
       person.attackFaceRemaining = 0;
     }
     update(previousElapsed || 0, { dt: 0 });
   }
 
-  function showCombatHit(id) {
+  function showCombatHit(id, options = {}) {
     const person = peopleById.get(id);
-    if (person) cues.showHit({ x: person.xNow, y: person.baseY + 1.06,
-      z: person.zNow });
+    if (!person) return;
+    triggerHumanHit(person.reaction, { ...options, heading: person.heading });
+    cues.showHit({ x: person.xNow, y: person.baseY + 1.06, z: person.zNow });
+  }
+
+  function getCombatPosition(id) {
+    const person = peopleById.get(id);
+    return person ? { x: person.xNow, y: person.baseY + (person.dead ? 0.35 : 1.1),
+      z: person.zNow } : null;
   }
 
   function showAttack(id, target, { noProjectile = false } = {}) {
@@ -562,5 +600,5 @@ export function createPrisonPopulation(scene, terrainHeight) {
   update(0);
   return { group: root, occupants: people, update, nearestPerson, collides,
     blocksMove, getCombatTargets, setCombatStates, resetCombatStates,
-    showCombatHit, showAttack, dispose };
+    showCombatHit, showAttack, getCombatPosition, dispose };
 }

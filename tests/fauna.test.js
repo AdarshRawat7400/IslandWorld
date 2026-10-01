@@ -5,6 +5,7 @@ import { createWorld, islandTerrainHeightAt } from '../src/world.js';
 import { isRoad } from '../src/roads.js';
 import { createFauna, planCoastalFauna, SERVER_WILDLIFE_HOMES,
   WILDLIFE_POPULATION, wildlifeTargetsAt } from '../src/fauna.js';
+import { birdFlightAt } from '../src/birdFlight.js';
 
 const world = createWorld(new THREE.Scene(), new THREE.Camera());
 
@@ -282,9 +283,16 @@ test('rendered wildlife exposes body targets and collapses after a server death'
   }
   assert.equal(fauna.getTargets().find((target) => target.id === 'sheep-0').active, false);
   wool.getMatrixAt(0, matrix);
-  assert.ok(matrix.determinant() < 0.6,
-    'the sheep shrinks during its brief non-graphic collapse');
-  for (let frame = 7; frame < 15; frame++) {
+  assert.ok(Math.abs(matrix.determinant() - 1) < 1e-5,
+    'the falling sheep keeps its body proportions');
+  const fallenRotation = new THREE.Quaternion();
+  matrix.decompose(new THREE.Vector3(), fallenRotation, new THREE.Vector3());
+  assert.ok(new THREE.Vector3(0, 1, 0).applyQuaternion(fallenRotation).y < 0.5,
+    'the sheep rolls onto its side as its knees buckle');
+  assert.ok(matrix.elements[13] < byId.get('sheep-0').y - 0.2);
+  assert.equal(wool.count, WILDLIFE_POPULATION.sheep,
+    'the body remains visible through its fall and settling');
+  for (let frame = 7; frame < 38; frame++) {
     fauna.update(0.1, 43 + frame * 0.1, 'mist', { multiplayer: true });
   }
   assert.equal(wool.count, WILDLIFE_POPULATION.sheep - 1,
@@ -318,7 +326,7 @@ test('birds can be hit, fall from their hit position, and reappear after respawn
   assert.equal(birdAfter.z, birdBefore.z);
   bodies.getMatrixAt(0, matrix);
   assert.ok(matrix.elements[13] < airborneY - 1, 'the gull falls toward the terrain');
-  for (let frame = 8; frame < 15; frame++) {
+  for (let frame = 8; frame < 100; frame++) {
     fauna.update(0.1, 31 + frame * 0.1, 'mist', { multiplayer: true });
   }
   assert.equal(bodies.count, WILDLIFE_POPULATION.birds - 1);
@@ -326,5 +334,146 @@ test('birds can be hit, fall from their hit position, and reappear after respawn
   fauna.update(0.016, 32.5, 'mist', { multiplayer: true });
   assert.equal(bodies.count, WILDLIFE_POPULATION.birds);
   assert.equal(fauna.getTargets().find((target) => target.id === 'bird-0').active, true);
+  fauna.dispose();
+});
+
+test('bird routes are reproducible smooth waypoints with varied heights and glides', () => {
+  const center = { x: -270, z: 100, y: 65, radius: 30 };
+  const reused = {};
+  const radii = [];
+  const heights = [];
+  let glides = 0;
+  for (let second = 0; second < 240; second += 1) {
+    const pose = birdFlightAt(17, second, 'mist', center);
+    const previous = birdFlightAt(17, second - 0.001, 'mist', center);
+    const next = birdFlightAt(17, second + 0.001, 'mist', center);
+    assert.deepEqual(birdFlightAt(17, second, 'mist', center, reused), pose);
+    assert.equal(birdFlightAt(17, second, 'mist', center, reused), reused,
+      'the client can reuse one pose record');
+    assert.ok(Math.hypot(next.x - previous.x, next.y - previous.y,
+      next.z - previous.z) < 0.03, 'flight never jumps between route legs');
+    assert.ok(Math.abs(pose.bank) <= 0.45 && Math.abs(pose.pitch) <= 0.28);
+    radii.push(Math.hypot(pose.x - center.x, pose.z - center.z));
+    heights.push(pose.y);
+    glides += pose.gliding ? 1 : 0;
+    const stormPose = birdFlightAt(17, second, 'storm', center);
+    for (const axis of ['x', 'y', 'z', 'heading']) assert.equal(stormPose[axis], pose[axis],
+      'a weather change increases flight effort without teleporting the target');
+  }
+  assert.ok(Math.max(...radii) - Math.min(...radii) > 20,
+    'the route explores different distances instead of circling a fixed radius');
+  assert.ok(Math.max(...heights) - Math.min(...heights) > 4);
+  assert.ok(glides > 0 && glides < 240, 'wingbeats alternate with gliding');
+  const first = birdFlightAt(17, 30, 'mist', center);
+  const later = birdFlightAt(17, 30 + Math.PI * 2 / 0.22, 'mist', center);
+  assert.ok(Math.hypot(first.x - later.x, first.z - later.z) > 5,
+    'the old orbit period no longer repeats the route');
+  const neighbour = birdFlightAt(18, 30, 'mist', center);
+  assert.ok(Math.hypot(first.x - neighbour.x, first.z - neighbour.z) > 8,
+    'individual birds follow distinct routes');
+});
+
+test('fauna render poses remain authoritative independent of prior frames and culling', () => {
+  const sceneA = new THREE.Scene();
+  const sceneB = new THREE.Scene();
+  const options = { coastalRadius: world.coastalRadius, isRoad, isLake: world.isLake };
+  const a = createFauna(sceneA, world.terrainHeight, options);
+  const b = createFauna(sceneB, world.terrainHeight, options);
+  for (let frame = 0; frame < 90; frame++) a.update(0.016, frame * 0.016, 'mist',
+    { multiplayer: true, playerX: 0, playerZ: 270 });
+  a.update(0.016, 72.31, 'storm', { multiplayer: true });
+  b.update(0.1, 72.31, 'storm', { multiplayer: true });
+  assert.deepEqual(a.getTargets(), b.getTargets(),
+    'late joining and different frame rates yield the same room targets');
+  const matrixA = new THREE.Matrix4();
+  const matrixB = new THREE.Matrix4();
+  for (const name of ['Coastal bird bodies', 'Coastal bird wings']) {
+    const meshA = sceneA.getObjectByName(name);
+    const meshB = sceneB.getObjectByName(name);
+    assert.equal(meshA.count, meshB.count);
+    for (let index = 0; index < meshA.count; index++) {
+      meshA.getMatrixAt(index, matrixA);
+      meshB.getMatrixAt(index, matrixB);
+      assert.deepEqual(matrixA.elements, matrixB.elements);
+    }
+  }
+  a.dispose();
+  b.dispose();
+});
+
+test('animal hits flinch without moving live hitboxes and reaction resources stay bounded', () => {
+  const scene = new THREE.Scene();
+  const fauna = createFauna(scene, world.terrainHeight, {
+    coastalRadius: world.coastalRadius, isRoad, isLake: world.isLake,
+  });
+  fauna.update(0.016, 42, 'mist', { multiplayer: true });
+  const targetBefore = fauna.getTargets().find((item) => item.id === 'sheep-0');
+  const wool = scene.getObjectByName('Feral sheep wool');
+  const before = new THREE.Matrix4();
+  const hit = new THREE.Matrix4();
+  wool.getMatrixAt(0, before);
+  const drawCalls = scene.children.length;
+  assert.equal(fauna.showCombatHit('missing'), false);
+  assert.equal(fauna.showCombatHit('sheep-0', { damage: 22,
+    direction: { x: 1, z: 0 } }), true);
+  fauna.update(0.1, 42, 'mist', { multiplayer: true });
+  wool.getMatrixAt(0, hit);
+  assert.notDeepEqual(hit.elements, before.elements, 'the struck rig visibly recoils');
+  assert.deepEqual(fauna.getTargets().find((item) => item.id === 'sheep-0'), targetBefore,
+    'nonlethal flinch cannot secretly move the room hitbox');
+  for (let frame = 0; frame < 8; frame++) fauna.update(0.1, 42, 'mist', { multiplayer: true });
+  wool.getMatrixAt(0, hit);
+  assert.deepEqual(hit.elements, before.elements, 'the flinch ends cleanly');
+  for (const target of fauna.getTargets()) for (let repeat = 0; repeat < 4; repeat++) {
+    fauna.showCombatHit(target.id, { damage: 999, direction: { x: Infinity, z: NaN } });
+  }
+  assert.equal(fauna.activeReactionCount, 250, 'one bounded reaction per animal');
+  fauna.setAnimalAlive('sheep-0', false, { direction: { x: 0, z: 1 } });
+  assert.equal(fauna.showCombatHit('sheep-0'), false, 'dead animals do not restart hit effects');
+  assert.equal(scene.children.length, drawCalls, 'hit effects spawn no extra meshes');
+  fauna.resetAnimals();
+  assert.equal(fauna.activeReactionCount, 0);
+  fauna.update(0.016, 42, 'mist', { multiplayer: true });
+  assert.equal(fauna.getTargets().filter((target) => target.alive).length, 250);
+  fauna.dispose();
+  assert.equal(fauna.showCombatHit('sheep-0'), false);
+  assert.equal(fauna.setAnimalAlive('bird-0', true), false);
+});
+
+test('a killed bird accelerates downward, tumbles, settles, and only then fades', () => {
+  const scene = new THREE.Scene();
+  const fauna = createFauna(scene, world.terrainHeight, {
+    coastalRadius: world.coastalRadius, isRoad, isLake: world.isLake,
+  });
+  fauna.update(0.016, 60, 'mist', { multiplayer: true });
+  const birds = scene.getObjectByName('Coastal bird bodies');
+  const matrix = new THREE.Matrix4();
+  birds.getMatrixAt(0, matrix);
+  const startY = matrix.elements[13];
+  const initialRotation = new THREE.Quaternion();
+  matrix.decompose(new THREE.Vector3(), initialRotation, new THREE.Vector3());
+  fauna.setAnimalAlive('bird-0', false, { direction: { x: 1, z: 0 } });
+  const heights = [];
+  for (let frame = 0; frame < 5; frame++) {
+    fauna.update(0.1, 60, 'mist', { multiplayer: true });
+    birds.getMatrixAt(0, matrix);
+    heights.push(matrix.elements[13]);
+  }
+  assert.ok(heights[3] - heights[4] > heights[0] - heights[1],
+    'gravity accelerates the bird instead of flattening it');
+  assert.ok(heights[4] < startY - 1);
+  const fallingRotation = new THREE.Quaternion();
+  matrix.decompose(new THREE.Vector3(), fallingRotation, new THREE.Vector3());
+  assert.ok(initialRotation.angleTo(fallingRotation) > 0.5);
+  assert.equal(birds.count, 120, 'the bird remains visible while falling');
+  for (let frame = 5; frame < 90; frame++) fauna.update(0.1, 60, 'mist', { multiplayer: true });
+  assert.equal(birds.count, 119);
+  assert.equal(fauna.activeReactionCount, 0);
+  fauna.setAnimalAlive('bird-0', true);
+  fauna.update(0.016, 60, 'mist', { multiplayer: true });
+  assert.equal(birds.count, 120);
+  birds.getMatrixAt(0, matrix);
+  assert.ok(Math.abs(matrix.elements[13] - startY) < 1e-5,
+    'respawn removes gravity and tumble state');
   fauna.dispose();
 });

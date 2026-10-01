@@ -112,6 +112,17 @@ test('Explore gunfire hunts server-owned wildlife without injuring a player', as
     WILDLIFE_KINDS.sheep.maxHealth);
   const changed = observe(game.witnessSocket, 'wildlife:state',
     (state) => state.id === game.animal.id && state.dead);
+  const ordering = [];
+  game.witnessSocket.on('wildlife:state', (state) => {
+    if (state.id === game.animal.id) ordering.push('state');
+  });
+  game.witnessSocket.on('combat:event', (event) => {
+    if (event.kind === 'wildlife_hit' && event.id === game.animal.id) ordering.push('hit');
+  });
+  const ownHit = observe(game.shooterSocket, 'combat:event',
+    (event) => event.kind === 'wildlife_hit' && event.id === game.animal.id);
+  const witnessHit = observe(game.witnessSocket, 'combat:event',
+    (event) => event.kind === 'wildlife_hit' && event.id === game.animal.id);
   const shot = await game.fire();
   assert.equal(shot.ok, true);
   assert.equal(shot.hit.kind, 'wildlife');
@@ -119,6 +130,18 @@ test('Explore gunfire hunts server-owned wildlife without injuring a player', as
   assert.equal(shot.hit.dead, true);
   assert.equal(shot.ammo.magazine, WEAPONS.rifle.magazine - 1);
   assert.equal(game.bystander.health, 100, 'Explore never damages the bystander in the ray');
+  const [firstEvent, secondEvent] = await Promise.all([ownHit, witnessHit]);
+  assert.deepEqual(firstEvent, secondEvent, 'independent identities receive the same impact cue');
+  assert.equal(secondEvent.animalKind, 'sheep');
+  assert.equal(secondEvent.weapon, 'rifle');
+  assert.equal(secondEvent.damage, WILDLIFE_KINDS.sheep.maxHealth,
+    'pain cues report actual lost health, capped by remaining health');
+  assert.deepEqual(secondEvent.position,
+    { x: game.animal.x, y: game.animal.y, z: game.animal.z });
+  assert.deepEqual(secondEvent.direction, game.direction);
+  assert.equal(secondEvent.shooterId, game.shooter.id);
+  assert.deepEqual(ordering.slice(0, 2), ['state', 'hit'],
+    'authoritative animal health reaches the witness before the cosmetic reaction');
   assert.equal((await changed).health, 0);
   const current = game.room.wildlife.get(game.animal.id);
   assert.equal(current.dead, true);
@@ -144,6 +167,11 @@ test('PvP chooses the nearer player before wildlife, then hits wildlife once cle
   const first = await game.fire();
   assert.equal(first.hit.kind, 'player');
   assert.equal(first.hit.targetId, game.bystander.id);
+  assert.equal(first.hit.weapon, 'rifle');
+  assert.deepEqual(first.hit.direction, game.direction);
+  assert.equal(first.hit.position.x, game.bystander.x);
+  assert.equal(first.hit.position.z, game.bystander.z);
+  assert.ok(first.hit.position.y < game.bystander.y);
   assert.equal(game.bystander.health, 100 - WEAPONS.rifle.damage);
   assert.equal(game.room.wildlife.get(game.animal.id).health,
     WILDLIFE_KINDS.sheep.maxHealth);

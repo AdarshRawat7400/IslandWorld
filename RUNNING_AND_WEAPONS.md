@@ -1,6 +1,19 @@
 # Running and firearm update
 
-## Verification on 2026-10-02
+## Aim, wildlife and impact update on 2026-10-02
+
+All **325 automated tests** and the production build passed, including two-identity room tests for matching impact events, explosive damage and prone mine detection.
+
+- Desktop uses mouse button events so holding right-click aim and pressing left-click fire works in either order. The fallback camera drag does not generate a duplicate shot on release.
+- Mobile AIM is a persistent toggle. Firing and reloading preserve it; changing weapons, holstering, opening the wheel/menu, or dying clears it. A second finger releasing cannot cancel the FIRE finger.
+- Birds use seeded, non-repeating waypoint paths with banking, altitude changes, glides and wingbeats. Client rendering and server hit validation share the same position calculation.
+- People flinch, buckle and collapse toward the impact direction. Remote corpses stay grounded at their authoritative death location until respawn/leave. Wildlife has short flinches, side falls and gravity-driven bird tumbles; the first-person death view falls to the ground before safe respawn.
+- Six CC0 human pain variants and one CC0 sheep vocal are bundled, with original bird/rabbit calls and missing-file fallbacks. Hit audio is positional for others and centered for self, with a 700 ms per-entity cooldown, distance attenuation and an eight-voice limit.
+- Grenades affect a **7 m** blast radius; mines affect **5 m**, with a **2 m** trigger radius. Damage falls with distance; structures/terrain can block it, armor absorbs it first, and spawn protection prevents it. Solo explosions now also hurt their nearby owner. Explore rooms block player damage; PvP permits it. Owners do not trigger their own mines, but can be hurt if another player, NPC or animal triggers one nearby.
+- Browser checks confirmed persistent mobile aim, firing/reloading in aim, a 20-round aimed SMG burst, seven decoded pain clips, recorded self pain, NPC retaliation and a grounded corpse, bird hit audio, solo grenade death, and safe respawn with protection.
+- Development-only diagnostic controls and the reduced QA render profile are excluded from the production build. Physical multi-finger phone gestures and headset sound balance still need real-device checks.
+
+## Previous running/firearm verification
 
 - All 290 automated tests passed, including two-identity Socket.IO combat, ownership, ammunition, reloads, spawn protection, Explore mode and replay rejection.
 - Production build passed; local combat diagnostic controls are excluded from the production bundle.
@@ -18,7 +31,7 @@ weather, touch controls, and cliff recovery. These changes apply to IslandWorld.
 | Walk / look | WASD / mouse | Left stick / drag the right side |
 | Sprint | Hold Shift while moving forward | Tap SPRINT; tap again to walk |
 | Fire | Left click; hold for SMG or LMG | Tap FIRE; hold for SMG or LMG |
-| Aim | Hold right mouse button | Hold AIM |
+| Aim | Hold right mouse button | Tap AIM to toggle on/off |
 | Reload | R | RELOAD |
 | Switch weapon | 1–3; tap Q/Tab to cycle, or hold for the wheel | WHEEL, then a gun |
 | Holster | H, or HOLSTER in the wheel | HOLSTER in the wheel |

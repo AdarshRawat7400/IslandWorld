@@ -50,6 +50,9 @@ import { createMultiplayerClient } from './multiplayerClient.js';
 import { createMultiplayerRoomUI } from './multiplayerRoomUi.js';
 import { createRemotePlayers } from './remotePlayers.js';
 import { createCombatPresentation } from './combatPresentation.js';
+import { createCombatMouseInput } from './combatInput.js';
+import { createHitAudio } from './hitAudio.js';
+import { applyHealthDamage, blastDamageForTarget, playerDownedPose } from './combatDamage.js';
 import { playerStance, togglePlayerStance } from './playerStance.js';
 import { createPlayerLocomotion } from './playerLocomotion.js';
 import { createAmmoPrediction } from './ammoPrediction.js';
@@ -94,6 +97,7 @@ function hideLoadingIfReady() {
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.08, 3200);
+const hitAudio = createHitAudio({ camera });
 camera.rotation.order = 'YXZ';
 scene.add(camera);
 const cinematicCapture = captureEnabled ? createCinematicCapture(camera) : null;
@@ -426,6 +430,7 @@ function requestLook() {
   // Clicking the canvas again remains a valid retry after that transient case.
   const capture = renderer.domElement.requestPointerLock;
   if (!capture) {
+    pointerLockFallback = true;
     showToast('HOLD LEFT CLICK AND DRAG TO LOOK');
     return;
   }
@@ -453,6 +458,7 @@ function openMenu() {
 }
 function closeMenu() {
   combat.unlockAudio();
+  void hitAudio.unlock();
   if (!started) {
     started = true;
     sound.start();
@@ -523,6 +529,7 @@ function toggleAudio() {
   sound.setMuted(muted);
   music.setMuted(muted);
   combat.setMuted(muted);
+  hitAudio.setMuted(muted);
   showToast(muted ? 'AUDIO OFF' : 'AUDIO ON');
 }
 function nearbyInteraction() {
@@ -766,10 +773,13 @@ let lastFireErrorAt = -Infinity;
 let qaRunUntil = 0;
 let qaFireUntil = 0;
 let combatQa = null;
+let combatMouse = null;
+let downedTime = null;
 
 function releaseCombatInput() {
   qaRunUntil = qaFireUntil = 0;
   triggerHeld = false;
+  combatMouse?.reset();
   locomotion.reset();
   footstepDistance = 0;
 }
@@ -795,6 +805,8 @@ function roomServerNow() {
 }
 
 function resetRoomPlayer(spawn, { fade = true } = {}) {
+  downedTime = null;
+  hitAudio.clear();
   releaseCombatInput();
   locomotion.reset({ refill: true });
   driving.forceExit();
@@ -862,8 +874,11 @@ function applyRoomSnapshot(room) {
     : Math.max(0, lastRoomArmor - (self.armor ?? 0));
   if (lostHealth || lostArmor) {
     combat.showDamage(lostHealth + lostArmor);
+    hitAudio.playHit({ id: selfId, kind: 'human', local: true,
+      damage: lostHealth + lostArmor, dead: self.dead });
   }
   if (self.dead && lastRoomHealth !== 0) {
+    downedTime ??= 0;
     resetAmmoPrediction(self.ammo);
     combat.showDeath();
     driving.forceExit();
@@ -964,14 +979,42 @@ function alertSoloNpcsNearShot(origin, direction, range, hitNpcId = null) {
   if (changed) syncSoloNpcs();
 }
 
-function hurtSoloNpc(npc, damage) {
+function hurtSoloNpc(npc, damage, direction) {
   if (!npc || npc.dead || damage <= 0) return false;
   const next = applyNpcDamage(npc, damage, 'solo');
   if (next === npc) return false;
   soloNpcs.set(npc.id, next);
   syncSoloNpcs();
-  if (npc.kind === 'resident') residents.showCombatHit(npc.id);
-  else prisonPopulation.showCombatHit(npc.id);
+  const reaction = { damage: npc.health - next.health, direction };
+  if (npc.kind === 'resident') residents.showCombatHit(npc.id, reaction);
+  else prisonPopulation.showCombatHit(npc.id, reaction);
+  hitAudio.playHit({ id: npc.id, kind: 'human', damage: reaction.damage,
+    dead: next.dead, position: { x: npc.x, y: npc.y + 1.05, z: npc.z } });
+  return true;
+}
+
+function damageSoloPlayer(amount, now = performance.now()) {
+  if (multiplayer.getState().room || soloHealth <= 0 || soloProtectedUntil > now) return false;
+  const hit = applyHealthDamage({ health: soloHealth, armor: soloArmor }, amount);
+  if (!hit.damage) return false;
+  soloHealth = hit.health;
+  soloArmor = hit.armor;
+  combat.showDamage(hit.damage);
+  hitAudio.playHit({ id: 'solo', kind: 'human', local: true,
+    damage: hit.damage, dead: hit.dead });
+  if (hit.dead) {
+    downedTime ??= 0;
+    soloRespawnAt = now + RESPAWN_DELAY_MS;
+    releaseCombatInput();
+    combat.showDeath();
+    driving.forceExit();
+    drone.exit();
+    keys.clear();
+    touchControls.reset();
+    showToast('YOU WERE DOWNED · RESPAWN WHEN READY');
+  }
+  combat.setState({ health: soloHealth, armor: soloArmor, dead: hit.dead,
+    respawnAt: soloRespawnAt, protectedUntil: soloProtectedUntil, serverNow: now });
   return true;
 }
 
@@ -1012,21 +1055,7 @@ function updateSoloNpcCombat(now = performance.now()) {
     if (!attack) continue;
     soloNpcs.set(npc.id, { ...npc, lastAttackAt: now });
     showNpcAttack(attack);
-    const armorDamage = Math.min(soloArmor, attack.damage);
-    const healthDamage = attack.damage - armorDamage;
-    soloArmor -= armorDamage;
-    soloHealth = Math.max(0, soloHealth - healthDamage);
-    combat.showDamage(armorDamage + healthDamage);
-    if (soloHealth === 0) {
-      soloRespawnAt = now + RESPAWN_DELAY_MS;
-      combat.showDeath();
-      keys.clear();
-      touchControls.reset();
-      showToast('YOU WERE DOWNED · RESPAWN WHEN READY');
-    }
-    combat.setState({ health: soloHealth, armor: soloArmor,
-      dead: soloHealth === 0, respawnAt: soloRespawnAt,
-      protectedUntil: soloProtectedUntil, serverNow: now });
+    damageSoloPlayer(attack.damage, now);
     if (soloHealth === 0) break;
   }
 }
@@ -1046,20 +1075,33 @@ function nearestSoloAnimal(origin, direction, range) {
   return nearest;
 }
 
-function hurtSoloAnimal(target, damage, now = performance.now()) {
+function hurtSoloAnimal(target, damage, now = performance.now(), direction) {
   if (!target.active || !target.alive || damage <= 0) return false;
-  const health = Math.max(0,
-    (soloWildlifeHealth.get(target.id)?.health ?? target.maxHealth) - damage);
+  const previousHealth = soloWildlifeHealth.get(target.id)?.health ?? target.maxHealth;
+  const health = Math.max(0, previousHealth - damage);
   soloWildlifeHealth.set(target.id, { health,
     respawnAt: health === 0 ? now + WILDLIFE_KINDS[target.kind].respawnMs : 0 });
-  if (health === 0) fauna.setAnimalAlive(target.id, false);
+  fauna.showCombatHit(target.id, { direction, damage: previousHealth - health });
+  if (health === 0) fauna.setAnimalAlive(target.id, false, { direction });
+  hitAudio.playHit({ id: target.id, kind: target.kind, position: target,
+    damage: previousHealth - health, dead: health === 0 });
   return true;
 }
 
 function explodeSoloItem(explosive, now = performance.now()) {
   const config = EXPLOSIVES[explosive.kind];
   if (!config) return;
-  const origin = { x: explosive.x, y: explosive.y + 0.15, z: explosive.z };
+  const origin = { x: explosive.x, y: explosive.y + 1, z: explosive.z };
+  const directionTo = (target) => new THREE.Vector3(target.x - origin.x,
+    target.y - origin.y, target.z - origin.z).normalize();
+  const stance = playerStance(player.stance);
+  const selfTarget = { x: player.x, z: player.z,
+    y: structures.playerGroundHeight(player.x, player.z) + stance.hitHeight * 0.5,
+    dead: soloHealth <= 0, mode: drone.active ? 'drone' : 'walk',
+    spawnProtectedUntil: soloProtectedUntil };
+  const selfDamage = blastDamageForTarget(origin, selfTarget, config, { now,
+    visible: (from, to) => !shotBlockedByStructures(from, to) && !shotBlockedByTerrain(from, to) });
+  if (selfDamage) damageSoloPlayer(selfDamage, now);
   let hitAny = false;
   for (const target of fauna.getTargets()) {
     if (!target.active || !target.alive) continue;
@@ -1068,7 +1110,7 @@ function explodeSoloItem(explosive, now = performance.now()) {
         - target.radius);
     if (distance > config.radius || shotBlockedByStructures(origin, target)
       || shotBlockedByTerrain(origin, target)) continue;
-    hitAny = hurtSoloAnimal(target, blastDamageAt(distance, config), now) || hitAny;
+    hitAny = hurtSoloAnimal(target, blastDamageAt(distance, config), now, directionTo(target)) || hitAny;
   }
   refreshSoloNpcPositions();
   for (const npc of soloNpcs.values()) {
@@ -1078,7 +1120,7 @@ function explodeSoloItem(explosive, now = performance.now()) {
       center.y - origin.y, center.z - origin.z) - 0.65);
     if (distance > config.radius || shotBlockedByStructures(origin, center)
       || shotBlockedByTerrain(origin, center)) continue;
-    hitAny = hurtSoloNpc(npc, blastDamageAt(distance, config)) || hitAny;
+    hitAny = hurtSoloNpc(npc, blastDamageAt(distance, config), directionTo(center)) || hitAny;
   }
   combat.showExplosion({ id: explosive.id, kind: explosive.kind,
     position: { x: explosive.x, y: explosive.y, z: explosive.z },
@@ -1185,9 +1227,9 @@ async function fireWeapon() {
     * (combat.aiming ? 0.003 : 0.005), -1.45, 1.45);
   if (!inRoom) {
     if (firstHit === npcHit && npcHit) {
-      if (hurtSoloNpc(npcHit.npc, WEAPONS[weapon].damage)) combat.showHit();
+      if (hurtSoloNpc(npcHit.npc, WEAPONS[weapon].damage, direction)) combat.showHit();
     } else if (firstHit === animalHit && animalHit) {
-      if (hurtSoloAnimal(animalHit.target, WEAPONS[weapon].damage, now)) combat.showHit();
+      if (hurtSoloAnimal(animalHit.target, WEAPONS[weapon].damage, now, direction)) combat.showHit();
     }
     alertSoloNpcsNearShot(origin, direction, firstHit?.distance ?? WEAPONS[weapon].range,
       firstHit === npcHit ? npcHit?.npc.id : null);
@@ -1248,6 +1290,7 @@ function selectEquipment(id) {
     return false;
   }
   triggerHeld = false;
+  combatMouse?.reset();
   if (GUN_IDS.includes(id)) {
     currentInventory = { ...currentInventory, selectedGun: id };
     if (!multiplayer.getState().room) soloInventory = currentInventory;
@@ -1405,12 +1448,29 @@ combat.setInventory(soloInventory);
 combat.setState({ mode: 'solo', ammo: localAmmo.revolver,
   health: soloHealth, armor: soloArmor, stance: player.stance,
   serverNow: performance.now() });
+combatMouse = createCombatMouseInput({ onAim: (aim) => combat.setAim(aim),
+  onTriggerChange: (held) => { triggerHeld = held && GUN_IDS.includes(combat.selectedEquipment); },
+  onFire: () => {
+    if (fallbackPointerStart) fallbackPointerStart.fired = true;
+    activateSelectedEquipment();
+  } });
 if (waterQaView === 'combat') {
   combatQa = document.createElement('section');
   combatQa.id = 'combat-qa';
   combatQa.setAttribute('aria-label', 'Local combat diagnostics');
   const readout = document.createElement('output');
   readout.id = 'combat-qa-state';
+  let qaResidentId = null;
+  let qaBirdId = null;
+  const lookAtTarget = (target, distance = 8, from = null) => {
+    releaseCombatInput();
+    player.x = from?.x ?? target.x;
+    player.z = from?.z ?? target.z + distance;
+    const dx = target.x - player.x, dz = target.z - player.z;
+    player.yaw = Math.atan2(-dx, -dz);
+    const eye = structures.playerGroundHeight(player.x, player.z) + cameraEyeHeight;
+    player.pitch = Math.atan2(target.y - eye, Math.hypot(dx, dz));
+  };
   for (const id of ['revolver', 'smg', 'lmg']) {
     const button = document.createElement('button');
     button.textContent = id.toUpperCase();
@@ -1422,6 +1482,32 @@ if (waterQaView === 'combat') {
     ['RELOAD', () => void reloadWeapon()],
     ['SPRINT 4s', () => { if (roomCombatReady()) qaRunUntil = performance.now() + 4000; }],
     ['STOP', releaseCombatInput],
+    ['AIM TOGGLE', () => combat.setAim(!combat.aiming)],
+    ['HIT SELF', () => damageSoloPlayer(34)],
+    ['SELF GRENADE', () => explodeSoloItem({ id: 'qa-self-grenade', kind: 'grenade',
+      x: player.x, z: player.z, y: structures.playerGroundHeight(player.x, player.z) })],
+    ['RESPAWN', respawnPlayer],
+    ['VIEW RESIDENT', () => {
+      refreshSoloNpcPositions();
+      const target = [...soloNpcs.values()].find(npc => npc.kind === 'resident' && !npc.dead);
+      if (target) { qaResidentId = target.id; lookAtTarget({ ...target, y: target.y + 1 }); }
+    }],
+    ['HIT RESIDENT', () => hurtSoloNpc(soloNpcs.get(qaResidentId), 60, { x: 0, z: -1 })],
+    ['VIEW BIRD', () => {
+      const birds = fauna.getTargets().filter(animal => animal.kind === 'bird' && animal.active);
+      const views = SAFE_SPAWNS.flatMap(from => birds.map(target => ({ from, target,
+        distance: Math.hypot(target.x - from.x, target.z - from.z) })));
+      const view = views.sort((a, b) => a.distance - b.distance).find(({ from, target, distance }) => {
+        const eye = { ...from, y: structures.playerGroundHeight(from.x, from.z) + cameraEyeHeight };
+        return distance > 8 && Math.hypot(distance, target.y - eye.y) < 70
+          && !shotBlockedByStructures(eye, target) && !shotBlockedByTerrain(eye, target);
+      });
+      if (view) { qaBirdId = view.target.id; lookAtTarget(view.target, 12, view.from); }
+    }],
+    ['HIT BIRD', () => {
+      const target = fauna.getTargets().find(animal => animal.id === qaBirdId);
+      if (target) hurtSoloAnimal(target, 60, performance.now(), { x: 0, z: -1 });
+    }],
   ]) {
     const button = document.createElement('button');
     button.textContent = label;
@@ -1438,6 +1524,7 @@ const voiceChatUI = createVoiceChatUI({ voice: voiceChat, client: multiplayer,
   mobile: touchEnabled });
 voiceChat.setMode(touchEnabled ? 'open' : 'push-to-talk');
 multiplayer.on('joined', (state) => {
+  hitAudio.clear();
   resetAmmoPrediction(state.self?.ammo);
   climateSampleTime = -Infinity;
   fauna.resetAnimals();
@@ -1501,17 +1588,41 @@ multiplayer.on('combat', (event) => {
     kind: event.itemKind, position: event.position, radius: event.radius });
   if (event.kind === 'npc_hit') {
     const npc = activeRoomNpcs.get(event.npcId);
-    if (npc?.kind === 'resident') residents.showCombatHit(event.npcId);
-    else prisonPopulation.showCombatHit(event.npcId);
+    if (npc?.kind === 'resident') residents.showCombatHit(event.npcId, event);
+    else prisonPopulation.showCombatHit(event.npcId, event);
+    hitAudio.playHit({ ...event, id: event.npcId, kind: 'human',
+      eventId: `npc:${event.npcId}:${event.at}` });
+  }
+  if (event.kind === 'wildlife_hit') {
+    fauna.showCombatHit(event.id, event);
+    if (event.dead) fauna.setAnimalAlive(event.id, false, event);
+    hitAudio.playHit({ ...event, kind: event.animalKind,
+      eventId: `animal:${event.id}:${event.at}` });
   }
   if (event.kind === 'npc_attack') {
     showNpcAttack(event);
+    const direction = event.origin && event.target ? new THREE.Vector3(
+      event.target.x - event.origin.x, event.target.y - event.origin.y,
+      event.target.z - event.origin.z).normalize() : undefined;
+    if (event.targetId !== selfId) remotePlayers.showCombatHit(event.targetId,
+      { direction, damage: event.damage });
+    hitAudio.playHit({ id: event.targetId, kind: 'human',
+      local: event.targetId === selfId, position: event.target,
+      damage: (event.armorDamage || 0) + (event.healthDamage || 0), dead: event.dead,
+      eventId: `attack:${event.npcId}:${event.targetId}:${event.at}` });
     if (event.targetId === selfId) {
       combat.showDamage((event.armorDamage || 0) + (event.healthDamage || 0));
       lastRoomHealth = event.health;
       lastRoomArmor = event.armor;
       combat.setState({ health: event.health, armor: event.armor, dead: event.dead });
     }
+  }
+  if (event.kind === 'hit') {
+    if (event.targetId !== selfId) remotePlayers.showCombatHit(event.targetId, event);
+    hitAudio.playHit({ ...event, id: event.targetId, kind: 'human',
+      local: event.targetId === selfId,
+      position: event.position || remotePlayers.getCombatPosition(event.targetId),
+      eventId: `player:${event.targetId}:${event.at}` });
   }
   if (event.kind === 'hit' && event.targetId === selfId) {
     combat.showDamage(event.damage);
@@ -1520,6 +1631,7 @@ multiplayer.on('combat', (event) => {
     combat.setState({ health: event.health, armor: event.armor, dead: event.dead });
   }
   if (event.kind === 'death' && event.playerId === selfId) {
+    downedTime ??= 0;
     resetAmmoPrediction(multiplayer.getState().self?.ammo);
     combat.showDeath();
     combat.setState({ health: 0, armor: 0, dead: true,
@@ -1538,6 +1650,8 @@ multiplayer.on('combat', (event) => {
   }
 });
 multiplayer.on('left', () => {
+  downedTime = null;
+  hitAudio.clear();
   resetAmmoPrediction();
   remotePlayers.clear();
   driving.forceExit();
@@ -1695,34 +1809,34 @@ window.addEventListener('blur', () => {
   combat.setAim(false);
   combat.closeEquipmentWheel({ commit: false });
 });
-renderer.domElement.addEventListener('pointerdown', (event) => {
-  if (event.pointerType === 'mouse' && event.button === 2 && roomCombatReady()
-    && GUN_IDS.includes(combat.selectedEquipment) && !combat.equipmentWheelOpen) {
-    event.preventDefault();
-    combat.setAim(true);
-  }
-  if (event.pointerType === 'mouse' && event.button === 0
-    && document.pointerLockElement === renderer.domElement
-    && roomCombatReady()) {
-    triggerHeld = GUN_IDS.includes(combat.selectedEquipment);
-    activateSelectedEquipment();
-  }
-  if (!touchEnabled && event.pointerType === 'mouse' && event.button === 0) {
+const mouseCombatPolicy = (event) => ({
+  canAim: roomCombatReady() && GUN_IDS.includes(combat.selectedEquipment),
+  canFire: roomCombatReady() && (document.pointerLockElement === renderer.domElement
+    || (pointerLockFallback && Boolean(event.buttons & 2))),
+});
+renderer.domElement.addEventListener('mousedown', (event) => {
+  const policy = mouseCombatPolicy(event);
+  if (event.button === 2 && policy.canAim) event.preventDefault();
+  combatMouse.handleMouseDown(event, policy);
+  if (!touchEnabled && event.button === 0) {
     mouseDragging = true;
-    fallbackPointerStart = { x: event.clientX, y: event.clientY, moved: false };
+    fallbackPointerStart = { x: event.clientX, y: event.clientY,
+      moved: false, fired: policy.canFire };
   }
 });
-window.addEventListener('pointerup', (event) => {
-  if (event.button === 0) triggerHeld = false;
-  if (event.pointerType === 'mouse' && event.button === 0
+window.addEventListener('mouseup', (event) => {
+  combatMouse.handleMouseUp(event, mouseCombatPolicy(event));
+  if (event.button === 0
     && pointerLockFallback && fallbackPointerStart && !fallbackPointerStart.moved
+    && !fallbackPointerStart.fired
     && Math.hypot(event.clientX - fallbackPointerStart.x,
       event.clientY - fallbackPointerStart.y) < 8 && roomCombatReady()) {
     activateSelectedEquipment();
   }
-  mouseDragging = false;
-  fallbackPointerStart = null;
-  if (event.button === 2) combat.setAim(false);
+  if (event.button === 0) {
+    mouseDragging = false;
+    fallbackPointerStart = null;
+  }
 });
 renderer.domElement.addEventListener('contextmenu', (event) => {
   if (roomCombatReady()) event.preventDefault();
@@ -1747,9 +1861,11 @@ document.addEventListener('pointerlockerror', () => {
 });
 document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement === renderer.domElement) pointerLockFallback = false;
-  else triggerHeld = false;
+  else combatMouse.reset();
 });
-window.addEventListener('pointercancel', () => { triggerHeld = false; });
+window.addEventListener('pointercancel', (event) => {
+  if (event.pointerType === 'mouse') combatMouse.reset();
+});
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) return;
   releaseCombatInput();
@@ -2009,13 +2125,6 @@ function frame(now) {
     sprintFactor: movementState.sprintFactor,
     wind: { x: Math.sin(climate.windDirection) * climate.windSpeed,
       z: Math.cos(climate.windDirection) * climate.windSpeed } });
-  if (combatQa) {
-    $('combat-qa-state').textContent = JSON.stringify({ weapon: combat.selectedEquipment,
-      ammo: localAmmo[combat.selectedWeapon], ...movementState,
-      smoke: combat.activeSmokeCount, reload: combat.reloadProgress,
-      pending: ammoPrediction.pendingCount, x: player.x, z: player.z });
-    combatQa.dataset.audio = JSON.stringify(combat.audioState);
-  }
 
   if (cliffFall.phase !== 'grounded') {
     fallPresentation.update(dt, { phase: cliffFall.phase === 'impact' ? 'impact' : 'falling',
@@ -2024,6 +2133,26 @@ function frame(now) {
   } else if (respawnFadeTime >= 0) {
     fallPresentation.update(dt, { phase: 'respawn', progress: respawnFadeTime / 0.9 });
   } else fallPresentation.reset();
+
+  const selfDead = roomState.room ? roomState.self?.dead : soloHealth <= 0;
+  if (selfDead && !cinematicCapture?.active && cliffFall.phase === 'grounded') {
+    downedTime = (downedTime ?? 0) + (active ? dt : 0);
+    const pose = playerDownedPose(downedTime, cameraEyeHeight);
+    camera.position.y = Math.max(structures.playerGroundHeight(player.x, player.z) + 0.26,
+      camera.position.y - pose.drop);
+    camera.rotation.x += pose.pitch;
+    camera.rotation.z = pose.roll;
+  } else if (!selfDead) downedTime = null;
+  if (combatQa) {
+    $('combat-qa-state').textContent = JSON.stringify({ weapon: combat.selectedEquipment,
+      ammo: localAmmo[combat.selectedWeapon], ...movementState,
+      smoke: combat.activeSmokeCount, reload: combat.reloadProgress,
+      pending: ammoPrediction.pendingCount, aiming: combat.aiming,
+      health: soloHealth, armor: soloArmor, downedTime,
+      cameraY: camera.position.y, x: player.x, z: player.z });
+    combatQa.dataset.audio = JSON.stringify(combat.audioState);
+    combatQa.dataset.hitAudio = JSON.stringify(hitAudio.getState());
+  }
 
   structures.update(elapsed);
   world.setIndoor(sheltered);

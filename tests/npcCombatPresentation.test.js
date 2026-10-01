@@ -24,9 +24,16 @@ test('resident combat state controls targets, talk, collision, and collapse', as
   assert.ok(target.y > 21 && target.y < 22);
   assert.equal(residents.nearestPerson(10, 280), null);
   assert.equal(residents.collides(10, 280), false);
-  residents.update(1, { dt: 0.45, cameraX: 10, cameraZ: 280,
+  residents.update(1, { dt: 0.1, cameraX: 10, cameraZ: 280,
     playerX: 10, playerZ: 281 });
-  assert.ok(dockhand.root.rotation.x > 1.3, 'dead resident should visibly lie down');
+  assert.ok(Math.abs(dockhand.root.rotation.x) < 0.2,
+    'death begins with a stagger instead of an instant flat body');
+  for (let i = 0; i < 14; i++) residents.update(1.1 + i * 0.1,
+    { dt: 0.1, cameraX: 10, cameraZ: 280 });
+  assert.ok(Math.abs(new THREE.Vector3(0, 1, 0).applyQuaternion(dockhand.root.quaternion).y)
+    < 0.03, 'dead resident should visibly lie down along its impact direction');
+  assert.ok(dockhand.root.position.y > 20.2 && dockhand.root.position.y < 20.5,
+    'settled body retains clearance above its authoritative ground');
 
   residents.resetCombatStates();
   assert.equal(residents.getCombatTargets().find(({ id }) => id === dockhand.id).alive,
@@ -77,7 +84,11 @@ test('prison NPCs stay targetable, but dead guards neither talk nor block the pa
   const standingY = new THREE.Vector3().setFromMatrixPosition(matrix).y;
   population.setCombatStates([{ id: guard.id, health: 0, maxHealth: 100,
     dead: true, alerted: true }]);
-  for (let i = 0; i < 6; i++) population.update(i * 0.1, { dt: 0.1 });
+  population.update(0.2, { dt: 0.1 });
+  head.getMatrixAt(guard.index, matrix);
+  assert.ok(new THREE.Vector3().setFromMatrixPosition(matrix).y > standingY - 0.3,
+    'guard first buckles rather than teleporting to the ground');
+  for (let i = 0; i < 14; i++) population.update(0.3 + i * 0.1, { dt: 0.1 });
   head.getMatrixAt(guard.index, matrix);
   const fallenY = new THREE.Vector3().setFromMatrixPosition(matrix).y;
   assert.ok(fallenY < standingY - 0.7, 'fallen head should lie near the ground');
@@ -86,6 +97,67 @@ test('prison NPCs stay targetable, but dead guards neither talk nor block the pa
   assert.equal(population.blocksMove(guard.x - 1, guard.z,
     guard.x, guard.z), false);
   assert.equal(population.getCombatTargets()[guard.index].alive, false);
+  population.dispose();
+});
+
+test('resident impacts flinch briefly, collapse direction follows hits, and dead snapshots stay anchored', async () => {
+  const residents = createIslandResidents(new THREE.Scene(), () => 10,
+    { isSafe: () => true, isRoad: () => false, loadModels: false });
+  await residents.ready;
+  const person = residents.people.find(({ id }) => id === 'dockhand');
+  person.root = new THREE.Group();
+  person.meshParts = [];
+  person.shadowsActive = false;
+  residents.showCombatHit(person.id, { direction: { x: 1, z: 0 }, damage: 30 });
+  residents.update(0.1, { dt: 0.1, cameraX: person.x, cameraZ: person.z });
+  assert.ok(Math.abs(person.root.rotation.z) > 0.03, 'nonlethal hit bends torso sideways');
+  for (let i = 0; i < 5; i++) residents.update(0.2 + i * 0.1,
+    { dt: 0.1, cameraX: person.x, cameraZ: person.z });
+  assert.ok(Math.abs(person.root.rotation.z) < 0.001, 'flinch naturally expires');
+  residents.showCombatHit(person.id, { direction: { x: 1, z: 0 }, damage: 100 });
+  residents.setCombatStates([{ id: person.id, x: 2, y: 10, z: 267, health: 0, dead: true }]);
+  for (let i = 0; i < 7; i++) residents.update(1 + i * 0.1,
+    { dt: 0.1, cameraX: 2, cameraZ: 267 });
+  const progress = person.collapse;
+  residents.setCombatStates([{ id: person.id, x: 50, y: 80, z: 280, health: 0, dead: true }]);
+  residents.update(2, { dt: 0.1, cameraX: 2, cameraZ: 267 });
+  assert.deepEqual([person.x, person.z, person.baseY], [2, 267, 10.025]);
+  assert.ok(person.collapse > progress, 'repeated dead snapshot does not restart the fall');
+  for (let i = 0; i < 8; i++) residents.update(2.1 + i * 0.1,
+    { dt: 0.1, cameraX: 2, cameraZ: 267 });
+  assert.ok(person.root.rotation.z < -1.3, 'projectile direction determines sideways fall');
+  assert.ok(Math.abs(person.root.rotation.x) < 0.01);
+  residents.resetCombatStates();
+  assert.equal(person.root.scale.y, 1);
+  assert.equal(person.root.rotation.z, 0);
+  assert.equal(person.reaction.dead, false);
+  residents.dispose();
+});
+
+test('prison impact flinch expires and repeated dead states keep the body location stable', () => {
+  const population = createPrisonPopulation(new THREE.Scene(), () => 10);
+  const guard = population.occupants[0];
+  const head = population.group.getObjectByName('Prison people head');
+  const matrix = new THREE.Matrix4();
+  head.getMatrixAt(guard.index, matrix);
+  const before = new THREE.Vector3().setFromMatrixPosition(matrix);
+  population.showCombatHit(guard.id, { direction: { x: 0, z: 1 }, damage: 35 });
+  population.update(0.1, { dt: 0.1 });
+  head.getMatrixAt(guard.index, matrix);
+  const flinched = new THREE.Vector3().setFromMatrixPosition(matrix);
+  assert.ok(flinched.distanceTo(before) > 0.04);
+  population.setCombatStates([{ id: guard.id, health: 0, dead: true }]);
+  for (let i = 0; i < 7; i++) population.update(i * 0.1, { dt: 0.1 });
+  const progress = guard.collapse;
+  population.setCombatStates([{ id: guard.id, x: 500, z: 500, heading: 0, dead: true }]);
+  population.update(1, { dt: 0.1 });
+  assert.equal(guard.x, guard.spawnX);
+  assert.equal(guard.z, guard.spawnZ);
+  assert.equal(guard.heading, guard.spawnHeading);
+  assert.ok(guard.collapse > progress);
+  population.resetCombatStates();
+  assert.equal(guard.collapse, 0);
+  assert.equal(guard.reaction.dead, false);
   population.dispose();
 });
 

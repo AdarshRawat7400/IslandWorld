@@ -572,3 +572,11 @@ Room voice uses livekit-client 2.22.3 and livekit-server-sdk 2.19.1 by LiveKit, 
 ## Recorded firearm and reload audio (CC0)
 
 The Free Firearm Sound Library by Ben Jaszczak, Brian Nelson, Kevin Heras, and Matthew Nanney; Gun reload sounds by SpringySpringo. Source declarations, excerpt hashes, and conversion details: assets/combat-audio/SOURCES.md. Full CC0 1.0 license: assets/combat-audio/CC0-1.0.txt. The shipped excerpts may be redistributed commercially.
+
+## Recorded hit vocals (CC0)
+
+Hurt Sound Effects by EZduzziteh: https://opengameart.org/content/hurt-sound-effects
+
+Sheep Baa recorded by mikewest and submitted by AntumDeluge: https://opengameart.org/content/sheep-baa
+
+Both creator pages declare CC0 1.0. The seven unchanged recordings, hashes, durations and source URLs are documented in assets/hit-audio/SOURCES.md. Full legal text: assets/hit-audio/CC0-1.0.txt. These recordings permit redistribution, including commercial games.

@@ -183,7 +183,11 @@ test('Explore gunfire wounds then kills a resident, emits state, and never respa
     assert.equal(first.hit.id, npc.id);
     assert.equal(first.hit.damage, WEAPONS.revolver.damage);
     assert.equal((await wounded).alerted, true);
-    assert.equal((await hitEvent).shooterId, game.player.id);
+    const event = await hitEvent;
+    assert.equal(event.shooterId, game.player.id);
+    assert.equal(event.weapon, 'revolver');
+    assert.deepEqual(event.direction, shot.direction);
+    assert.deepEqual(event.position, { x: npc.x, y: npc.y + 1.05, z: npc.z });
     for (let i = 0; i < 2; i++) {
       game.advance(WEAPONS.revolver.fireIntervalMs);
       const result = await request(game.socket, 'combat:fire',
@@ -248,15 +252,22 @@ test('grenade damage is authoritative for nearby NPCs in Explore', async (t) => 
   game.aimAt(npc, 6);
   const changed = observe(game.socket, 'npc:state',
     (state) => state.id === npc.id && state.health < state.maxHealth);
+  const hitEvent = observe(game.socket, 'combat:event',
+    (event) => event.kind === 'npc_hit' && event.npcId === npc.id);
   const used = await request(game.socket, 'combat:use', {
     kind: 'grenade', target: { x: npc.x, z: npc.z },
   });
   assert.equal(used.ok, true);
   game.advance(2200);
   const state = await changed;
+  const hit = await hitEvent;
   assert.ok(state.health < npc.maxHealth);
   assert.equal(state.alerted, !state.dead);
   assert.equal(game.room.npcs.get(npc.id).health, state.health);
+  assert.equal(hit.damage, npc.health - state.health);
+  assert.equal(hit.weapon, 'grenade');
+  assert.deepEqual(hit.position, { x: npc.x, y: npc.y + 1.05, z: npc.z });
+  assert.ok(Math.abs(Math.hypot(hit.direction.x, hit.direction.y, hit.direction.z) - 1) < 1e-9);
 });
 
 test('prison walls block a detainee attack despite close range', async (t) => {

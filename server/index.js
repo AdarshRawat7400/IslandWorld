@@ -74,6 +74,21 @@ function damagePlayer(player, damage) {
     health: player.health, dead: player.health === 0 };
 }
 
+function playerBodyPosition(player) {
+  const stance = playerStance(player.stance);
+  return { x: player.x, y: player.y - stance.eyeHeight + stance.hitHeight * 0.5,
+    z: player.z };
+}
+
+function impactDirection(origin, target) {
+  const x = target.x - origin.x;
+  const y = target.y - origin.y;
+  const z = target.z - origin.z;
+  const length = Math.hypot(x, y, z);
+  return length > 1e-6 ? { x: x / length, y: y / length, z: z / length }
+    : { x: 0, y: 1, z: 0 };
+}
+
 function allowedOrigin(origin, configured) {
   if (!origin) return true; // Node clients and same-origin server-side checks.
   if (configured.length) return configured.includes(origin);
@@ -135,6 +150,7 @@ function publicPlayer(player) {
     yaw: player.yaw, pitch: player.pitch, mode: player.mode,
     stance: player.stance, vehicleId: player.vehicleId,
     health: player.health, armor: player.armor, dead: player.dead,
+    deadAt: player.dead ? player.deadAt : 0,
     spawnProtectedUntil: player.spawnProtectedUntil,
     respawnAvailableAt: player.dead ? player.deadAt + RESPAWN_DELAY_MS : 0,
     connected: player.connected, ammo: publicAmmo(player.ammo),
@@ -320,7 +336,7 @@ export function createMultiplayerServer({
     player.inventory = createInventory({ guns: ['revolver'] });
   }
 
-  function markPlayerDead(room, player, killerId, weapon, now) {
+  function markPlayerDead(room, player, killerId, weapon, now, impact = {}) {
     player.dead = true;
     player.deadAt = now;
     player.armor = 0;
@@ -328,6 +344,8 @@ export function createMultiplayerServer({
     dropInventory(room, player, now);
     io.to(roomChannel(room.code)).emit('combat:event', {
       kind: 'death', playerId: player.id, killerId, weapon,
+      position: impact.position || playerBodyPosition(player),
+      ...(impact.direction ? { direction: impact.direction } : {}),
       health: 0, armor: 0, at: now,
       respawnAvailableAt: now + RESPAWN_DELAY_MS,
     });
@@ -343,20 +361,21 @@ export function createMultiplayerServer({
     io.to(roomChannel(room.code)).emit('npc:state', publicNpc(npc));
   }
 
-  function damageNpc(room, npc, amount, attackerId, weapon, now, distance = 0) {
+  function damageNpc(room, npc, amount, attackerId, weapon, now, distance = 0, direction = null) {
     if (npc.dead) return null;
     const changed = applyNpcDamage(npc, amount, attackerId);
     publishNpc(room, changed);
     const position = { x: changed.x, y: changed.y + 1.05, z: changed.z };
     const hit = { kind: 'npc', id: changed.id, npcId: changed.id,
       damage: npc.health - changed.health, health: changed.health,
-      dead: changed.dead, distance, position };
+      dead: changed.dead, distance, position, weapon,
+      ...(direction ? { direction } : {}) };
     io.to(roomChannel(room.code)).emit('combat:event', {
       ...hit, kind: 'npc_hit', shooterId: attackerId, weapon, at: now,
     });
     if (changed.dead) io.to(roomChannel(room.code)).emit('combat:event', {
       kind: 'npc_death', npcId: changed.id, killerId: attackerId,
-      weapon, position, at: now,
+      weapon, position, ...(direction ? { direction } : {}), at: now,
     });
     return hit;
   }
@@ -383,19 +402,20 @@ export function createMultiplayerServer({
       for (const target of room.players.values()) {
         if (target.dead || !target.connected || target.mode === 'drone'
           || target.spawnProtectedUntil > now) continue;
-        const impact = { x: target.x, y: target.y - 0.8, z: target.z };
+        const impact = playerBodyPosition(target);
         const distance = Math.hypot(impact.x - origin.x, impact.y - origin.y,
           impact.z - origin.z);
         const damage = blastDamageAt(distance, config);
         if (!damage || !blastVisible(origin, impact)) continue;
         const hit = { kind: 'player', targetId: target.id,
-          ...damagePlayer(target, damage), distance };
+          ...damagePlayer(target, damage), distance, position: impact,
+          direction: impactDirection(origin, impact), weapon: explosive.kind };
         hits.push(hit);
         io.to(roomChannel(room.code)).emit('combat:event', {
           ...hit, kind: 'hit', targetKind: 'player', shooterId: explosive.ownerId,
           weapon: explosive.kind, at: now,
         });
-        if (hit.dead) markPlayerDead(room, target, explosive.ownerId, explosive.kind, now);
+        if (hit.dead) markPlayerDead(room, target, explosive.ownerId, explosive.kind, now, hit);
       }
     }
     for (const target of wildlifeTargets(room, now)) {
@@ -406,14 +426,20 @@ export function createMultiplayerServer({
         impact.z - origin.z);
       const damage = blastDamageAt(distance, config);
       if (!damage || !blastVisible(origin, impact)) continue;
+      const oldHealth = animal.health;
       animal.health = Math.max(0, animal.health - damage);
       animal.dead = animal.health === 0;
       animal.respawnAt = animal.dead
         ? now + WILDLIFE_KINDS[target.kind].respawnMs : 0;
-      const hit = { kind: 'wildlife', id: animal.id, damage,
-        health: animal.health, dead: animal.dead, distance };
+      const hit = { kind: 'wildlife', id: animal.id, animalKind: target.kind,
+        damage: oldHealth - animal.health, health: animal.health, dead: animal.dead,
+        distance, position: impact, direction: impactDirection(origin, impact),
+        weapon: explosive.kind };
       hits.push(hit);
       io.to(roomChannel(room.code)).emit('wildlife:state', publicWildlife(animal));
+      io.to(roomChannel(room.code)).emit('combat:event', {
+        ...hit, kind: 'wildlife_hit', shooterId: explosive.ownerId, at: now,
+      });
     }
     for (const npc of room.npcs.values()) {
       if (npc.dead) continue;
@@ -423,7 +449,7 @@ export function createMultiplayerServer({
       const damage = blastDamageAt(distance, config);
       if (!damage || !blastVisible(origin, impact)) continue;
       const hit = damageNpc(room, npc, damage, explosive.ownerId,
-        explosive.kind, now, distance);
+        explosive.kind, now, distance, impactDirection(origin, impact));
       if (hit) hits.push(hit);
     }
     io.to(roomChannel(room.code)).emit('combat:event', {
@@ -442,7 +468,7 @@ export function createMultiplayerServer({
     if (room.mode === 'pvp' && [...room.players.values()].some((target) =>
       target.id !== explosive.ownerId && target.connected && !target.dead
       && target.mode !== 'drone' && target.spawnProtectedUntil <= now
-      && near(target, target.y - 0.8))) {
+      && near(target, playerBodyPosition(target).y))) {
       return true;
     }
     if ([...room.npcs.values()].some((npc) => !npc.dead
@@ -1031,20 +1057,27 @@ export function createMultiplayerServer({
       if (nearest?.kind === 'player') {
         const target = nearest.target;
         hit = { kind: 'player', targetId: target.id, distance: nearest.distance,
-          ...damagePlayer(target, weapon.damage) };
-        if (hit.dead) markPlayerDead(room, target, player.id, data.weapon, now);
+          ...damagePlayer(target, weapon.damage), position: playerBodyPosition(target),
+          direction, weapon: data.weapon };
+        if (hit.dead) markPlayerDead(room, target, player.id, data.weapon, now, hit);
       } else if (nearest?.kind === 'wildlife') {
         const animal = nearest.animal;
+        const oldHealth = animal.health;
         animal.health = Math.max(0, animal.health - weapon.damage);
         animal.dead = animal.health === 0;
         animal.respawnAt = animal.dead
           ? now + WILDLIFE_KINDS[nearest.target.kind].respawnMs : 0;
         hit = { kind: 'wildlife', id: animal.id, distance: nearest.distance,
-          health: animal.health, dead: animal.dead, damage: weapon.damage };
+          health: animal.health, dead: animal.dead, damage: oldHealth - animal.health,
+          animalKind: nearest.target.kind, position: { x: nearest.target.x,
+            y: nearest.target.y, z: nearest.target.z }, direction, weapon: data.weapon };
         io.to(roomChannel(room.code)).emit('wildlife:state', publicWildlife(animal));
+        io.to(roomChannel(room.code)).emit('combat:event', {
+          ...hit, kind: 'wildlife_hit', shooterId: player.id, at: now,
+        });
       } else if (nearest?.kind === 'npc') {
         hit = damageNpc(room, nearest.npc, weapon.damage, player.id,
-          data.weapon, now, nearest.distance);
+          data.weapon, now, nearest.distance, direction);
       }
       alertNearShot(room, player, data.origin, direction,
         nearest?.distance ?? weapon.range);
@@ -1123,10 +1156,12 @@ export function createMultiplayerServer({
           kind: 'npc_attack', npcId: npc.id, targetId: target.id,
           attackKind: attack.attackKind, weapon: attack.weapon,
           origin: attack.origin,
-          target: attack.target, ...impact, at: now,
+          target: attack.target, position: attack.target,
+          direction: impactDirection(attack.origin, attack.target), ...impact, at: now,
         });
         if (impact.dead) markPlayerDead(room, target, npc.id,
-          attack.attackKind, now);
+          attack.attackKind, now, { position: attack.target,
+            direction: impactDirection(attack.origin, attack.target) });
       }
       const animals = [...room.explosives.values()].some((item) => item.kind === 'mine')
         ? wildlifeTargets(room, now) : [];

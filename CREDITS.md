@@ -121,3 +121,7 @@ The [bundled license file](public/THIRD_PARTY_LICENSES.md) includes the required
 ## Room voice software
 
 Room voice uses LiveKit's JavaScript and server SDKs (Apache 2.0). Source links and the full license are included in public/THIRD_PARTY_LICENSES.md; setup and verification are documented in VOICE_CHAT.md.
+
+## Hit vocals
+
+Six human pain grunts from [Hurt Sound Effects by EZduzziteh](https://opengameart.org/content/hurt-sound-effects), and a startled sheep vocal from [Sheep Baa by mikewest / AntumDeluge](https://opengameart.org/content/sheep-baa), are redistributed under CC0 1.0. Sources, file hashes and the complete license are in [`public/assets/hit-audio/SOURCES.md`](public/assets/hit-audio/SOURCES.md). Bird/rabbit hit calls and missing-recording fallbacks are original short synthesized vocals. No film or celebrity audio is used.

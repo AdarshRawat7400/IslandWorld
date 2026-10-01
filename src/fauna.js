@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { islandCoastalRadiusAt, islandTerrainHeightAt } from './world.js';
 import { isRoad } from './roads.js';
 import { isLake } from './inlandLake.js';
+import { birdFlightAt } from './birdFlight.js';
 
 // Original, low-poly coastal wildlife. All forms and markings are generated here;
 // no external models, textures, audio, or animation data are needed.
@@ -87,24 +88,22 @@ export function wildlifeTargetsAt(homes, elapsed, weather = 'mist', options = {}
   const rabbitCount = storm ? 0 : rain ? Math.ceil(homes.rabbits.length / 2) : homes.rabbits.length;
   const playerX = finite(options.playerX, Infinity);
   const playerZ = finite(options.playerZ, Infinity);
-  const targets = [];
+  const targets = options.targetBuffer || [];
   for (let i = 0; i < BIRD_COUNT; i++) {
-    const rank = Math.floor(i / BIRD_FLOCKS.length);
     const flockIndex = i % BIRD_FLOCKS.length;
     const flock = BIRD_FLOCKS[flockIndex];
-    const phase = rank * 2.39996323 + flockIndex * 0.37;
-    const radius = flock.radius * (0.68 + rank * 0.088);
-    const speed = (0.22 + rank * 0.012 + flockIndex * 0.003)
-      * (storm ? 1.48 : rain ? 1.2 : 1);
-    const angle = phase + time * speed;
-    const aspect = 0.68 + rank * 0.025;
-    targets.push({ id: `bird-${i}`, kind: 'bird',
-      x: flock.x + Math.cos(angle) * radius,
-      y: flock.y - (storm ? 4.5 : 0) + Math.sin(time * 0.78 + phase) * 1.5,
-      z: flock.z + Math.sin(angle) * radius * aspect,
-      radius: WILDLIFE_KINDS.bird.radius, maxHealth: WILDLIFE_KINDS.bird.maxHealth,
-      active: i < birdCount });
+    const target = birdFlightAt(i, time, weather, flock,
+      targets[i] || (targets[i] = {}));
+    // Wide routes can cross the higher interior. Both room authority and
+    // rendering use this shared clearance, even without a client callback.
+    target.y = Math.max(target.y, islandTerrainHeightAt(target.x, target.z) + 14);
+    target.id = `bird-${i}`;
+    target.kind = 'bird';
+    target.radius = WILDLIFE_KINDS.bird.radius;
+    target.maxHealth = WILDLIFE_KINDS.bird.maxHealth;
+    target.active = i < birdCount;
   }
+  let targetIndex = BIRD_COUNT;
   for (let i = 0; i < homes.sheep.length; i++) {
     const home = homes.sheep[i];
     const phase = i * 2.17;
@@ -113,10 +112,11 @@ export function wildlifeTargetsAt(homes, elapsed, weather = 'mist', options = {}
       home.x + Math.sin(time * 0.12 + phase) * 2.2 * wander,
       home.z + Math.cos(time * 0.105 + phase * 1.23) * 1.7 * wander,
       1, options);
-    targets.push({ id: `sheep-${i}`, kind: 'sheep',
+    targets[targetIndex++] = { id: `sheep-${i}`, kind: 'sheep',
       x: next.x, y: next.y + 0.70, z: next.z,
+      heading: phase + Math.sin(time * 0.09 + phase) * 0.28,
       radius: WILDLIFE_KINDS.sheep.radius, maxHealth: WILDLIFE_KINDS.sheep.maxHealth,
-      active: true });
+      active: true };
   }
   for (let i = 0; i < homes.rabbits.length; i++) {
     const home = homes.rabbits[i];
@@ -136,11 +136,14 @@ export function wildlifeTargetsAt(homes, elapsed, weather = 'mist', options = {}
       home.z + Math.cos(time * 0.32 + phase) * 1.15 + escapeZ,
       0.35, options);
     const hop = Math.max(0, Math.sin(time * 6.5 + phase)) * (flee > 0 ? 0.11 : 0.04);
-    targets.push({ id: `rabbit-${i}`, kind: 'rabbit',
+    targets[targetIndex++] = { id: `rabbit-${i}`, kind: 'rabbit',
       x: next.x, y: next.y + 0.36 + hop, z: next.z,
+      heading: Math.atan2(escapeX + Math.cos(time * 0.37 + phase),
+        escapeZ - Math.sin(time * 0.32 + phase)),
       radius: WILDLIFE_KINDS.rabbit.radius, maxHealth: WILDLIFE_KINDS.rabbit.maxHealth,
-      active: i < rabbitCount });
+      active: i < rabbitCount };
   }
+  targets.length = targetIndex;
   return targets;
 }
 
@@ -333,10 +336,7 @@ function makeBirds(scene, resources) {
     leftWings.setColorAt(index, new THREE.Color(wingColor));
     beaks.setColorAt(index, new THREE.Color(dark ? 0x4a4a44 : 0xe1bd78));
     tails.setColorAt(index, new THREE.Color(dark ? 0x263137 : 0xabb4b1));
-    birds.push({ flock, rank, phase: rank * 2.39996323 + flock * 0.37,
-      radius: BIRD_FLOCKS[flock].radius * (0.68 + rank * 0.088),
-      speed: 0.22 + rank * 0.012 + flock * 0.003,
-      size: dark ? 0.91 : 0.9 + (rank % 4) * 0.045 });
+    birds.push({ size: dark ? 0.91 : 0.9 + (rank % 4) * 0.045 });
     }
   }
   scene.add(body, head, wings, leftWings, beaks, tails);
@@ -496,8 +496,17 @@ export function createFauna(scene, terrainHeight, options = {}) {
   const wingPose = new THREE.Quaternion();
   const vertical = new THREE.Vector3(0, 1, 0);
   const forward = new THREE.Vector3(0, 0, 1);
+  const lateral = new THREE.Vector3(1, 0, 0);
+  const reactionAxis = new THREE.Vector3();
+  const reactionRotation = new THREE.Quaternion();
+  const reactionPitch = new THREE.Quaternion();
+  const finalRotation = new THREE.Quaternion();
+  const visual = { kind: 'bird', state: null, x: 0, y: 0, z: 0,
+    offsetX: 0, offsetY: 0, offsetZ: 0, fade: 1 };
   const life = new Map(wildlifeTargetsAt(SERVER_WILDLIFE_HOMES, 0).map((target) =>
-    [target.id, { alive: true, deathAge: 0, deathTarget: null }]));
+    [target.id, { alive: true, deathAge: 0, deathTarget: null,
+      hitAge: Infinity, hitStrength: 0, directionX: 0, directionZ: 1,
+      deathDuration: 4, deathGroundY: 0 }]));
   let targets = [];
   let activeVisual = null;
   let callClock = 0;
@@ -505,21 +514,86 @@ export function createFauna(scene, terrainHeight, options = {}) {
   let callSerial = 0;
   let disposed = false;
 
-  function setInstance(mesh, index, x, y, z, quaternion, sx, sy, sz) {
-    if (activeVisual && !activeVisual.state.alive) {
-      const collapse = clamp(activeVisual.state.deathAge / 1.3, 0, 1);
-      if (activeVisual.kind === 'bird') {
-        y += (activeVisual.groundY + 0.15 - y) * collapse * collapse;
+  const smooth = (value) => {
+    const t = clamp(value, 0, 1);
+    return t * t * (3 - 2 * t);
+  };
+
+  function beginVisual(target, state, kind, groundY) {
+    activeVisual = visual;
+    Object.assign(visual, { kind, state, x: target.x, y: target.y, z: target.z,
+      offsetX: 0, offsetY: 0, offsetZ: 0, fade: 1 });
+    reactionRotation.identity();
+    const heading = finite(target.heading, 0);
+    if (state.alive) {
+      if (state.hitAge < 0.64) {
+        const impulse = Math.sin(Math.min(1, state.hitAge / 0.15) * Math.PI / 2)
+          * Math.exp(-state.hitAge * 6.5) * state.hitStrength;
+        reactionAxis.set(Math.cos(heading), 0, -Math.sin(heading));
+        reactionRotation.setFromAxisAngle(reactionAxis, -impulse * 0.20);
+        visual.offsetY = -impulse * (kind === 'sheep' ? 0.11 : 0.045);
+        visual.offsetX = state.directionX * impulse * 0.055;
+        visual.offsetZ = state.directionZ * impulse * 0.055;
       }
-      else y = activeVisual.groundY + (y - activeVisual.groundY) * (1 - collapse * 0.78);
-      const vanish = Math.max(0.001, 1 - collapse * collapse * collapse);
-      sx *= vanish;
-      sy *= vanish * (1 - collapse * 0.55);
-      sz *= vanish;
+      return;
     }
-    position.set(x, y, z);
+    const age = state.deathAge;
+    if (kind === 'bird') {
+      const altitude = Math.max(0, target.y - groundY - 0.17);
+      const impactAt = Math.sqrt(2 * altitude / 11.8);
+      const fallingTime = Math.min(age, impactAt);
+      const driftTime = 1 - Math.exp(-fallingTime * 1.1);
+      const flightSpeed = Math.min(7, finite(target.flightSpeed, 3));
+      visual.offsetX = (Math.sin(heading) * flightSpeed + state.directionX * 2.6) * driftTime;
+      visual.offsetZ = (Math.cos(heading) * flightSpeed + state.directionZ * 2.6) * driftTime;
+      visual.offsetY = -Math.min(altitude, 0.5 * 11.8 * fallingTime * fallingTime);
+      const settled = Math.max(0, age - impactAt);
+      visual.offsetY += settled ? Math.sin(settled * 17) * Math.exp(-settled * 8) * 0.10 : 0;
+      reactionAxis.set(Math.sin(heading), 0, Math.cos(heading));
+      reactionRotation.setFromAxisAngle(reactionAxis,
+        age < impactAt ? fallingTime * 3.4 : impactAt * 3.4
+          + smooth(settled / 0.3) * (Math.PI / 2 - (impactAt * 3.4) % (Math.PI * 2)));
+      reactionAxis.set(Math.cos(heading), 0, -Math.sin(heading));
+      reactionPitch.setFromAxisAngle(reactionAxis, age < impactAt
+        ? -smooth(age / 0.45) * 0.85 : -0.85 * (1 - smooth(settled / 0.35)));
+      reactionRotation.multiply(reactionPitch);
+      visual.fade = 1 - smooth((settled - 1.35) / 0.75);
+    }
+    else {
+      const buckle = smooth(age / 0.32);
+      const fall = smooth((age - 0.12) / 0.84);
+      const side = Math.cos(heading) * state.directionX - Math.sin(heading) * state.directionZ >= 0 ? 1 : -1;
+      const restHeight = kind === 'sheep' ? 0.32 : 0.16;
+      visual.offsetY = (groundY + restHeight - target.y) * fall
+        - (kind === 'sheep' ? 0.14 : 0.035) * buckle * (1 - fall);
+      visual.offsetY += age > 0.96
+        ? Math.sin((age - 0.96) * 15) * Math.exp(-(age - 0.96) * 7) * 0.035 : 0;
+      visual.offsetX = state.directionX * 0.23 * fall;
+      visual.offsetZ = state.directionZ * 0.23 * fall;
+      reactionAxis.set(Math.sin(heading), 0, Math.cos(heading));
+      reactionRotation.setFromAxisAngle(reactionAxis, side * 1.47 * fall);
+      visual.fade = 1 - smooth((age - 2.65) / 0.8);
+    }
+  }
+
+  function setInstance(mesh, index, x, y, z, quaternion, sx, sy, sz) {
+    if (activeVisual) {
+      position.set(x - visual.x, y - visual.y, z - visual.z)
+        .applyQuaternion(reactionRotation);
+      position.x += visual.x + visual.offsetX;
+      position.y += visual.y + visual.offsetY;
+      position.z += visual.z + visual.offsetZ;
+      finalRotation.copy(reactionRotation).multiply(quaternion);
+      sx *= Math.max(0.001, visual.fade);
+      sy *= Math.max(0.001, visual.fade);
+      sz *= Math.max(0.001, visual.fade);
+    }
+    else {
+      position.set(x, y, z);
+      finalRotation.copy(quaternion);
+    }
     scale.set(sx, sy, sz);
-    matrix.compose(position, quaternion, scale);
+    matrix.compose(position, finalRotation, scale);
     mesh.setMatrixAt(index, matrix);
   }
 
@@ -527,6 +601,16 @@ export function createFauna(scene, terrainHeight, options = {}) {
     if (!Number.isFinite(cameraX) || !Number.isFinite(cameraZ)) return true;
     const limit = VISUAL_RANGE[kind];
     return (target.x - cameraX) ** 2 + (target.z - cameraZ) ** 2 < limit * limit;
+  }
+
+  function setHitDirection(state, direction) {
+    const dx = finite(direction?.x, 0);
+    const dz = finite(direction?.z, 0);
+    const length = Math.hypot(dx, dz);
+    if (length > 0.001) {
+      state.directionX = dx / length;
+      state.directionZ = dz / length;
+    }
   }
 
   function update(dt, elapsed, weather = 'mist', context = {}) {
@@ -543,14 +627,17 @@ export function createFauna(scene, terrainHeight, options = {}) {
       ? Math.ceil(targetHomes.rabbits.length / 2) : targetHomes.rabbits.length;
     targets = wildlifeTargetsAt(targetHomes, time, weather,
       context.multiplayer
-        ? { multiplayer: true, terrainHeight }
-        : { ...options, terrainHeight, playerX, playerZ });
-    // A killed bird falls where it was hit rather than continuing its orbit.
+        ? { multiplayer: true, terrainHeight, targetBuffer: targets }
+        : { ...options, terrainHeight, playerX, playerZ, targetBuffer: targets });
+    // A killed animal retains the impact pose while its visual rig falls.
     for (let i = 0; i < targets.length; i++) {
       const deathTarget = life.get(targets[i].id)?.deathTarget;
-      if (deathTarget) targets[i] = { ...targets[i], ...deathTarget };
+      if (deathTarget) Object.assign(targets[i], deathTarget);
     }
-    for (const state of life.values()) if (!state.alive) state.deathAge += step;
+    for (const state of life.values()) {
+      if (!state.alive) state.deathAge = Math.min(state.deathDuration + 0.1, state.deathAge + step);
+      if (state.hitAge < 0.7) state.hitAge += step;
+    }
     let nearestBirdDistance = Infinity;
     let visibleBirds = 0;
     for (let i = 0; i < birdCount; i++) {
@@ -560,22 +647,18 @@ export function createFauna(scene, terrainHeight, options = {}) {
       const distance = Math.hypot(target.x - playerX, target.z - playerZ);
       if (state.alive) nearestBirdDistance = Math.min(nearestBirdDistance, distance);
       if (!inVisualRange(target, 'bird', playerX, playerZ)
-        || (!state.alive && state.deathAge > 1.3)) continue;
+        || (!state.alive && state.deathAge > state.deathDuration)) continue;
       const slot = visibleBirds++;
-      activeVisual = { kind: 'bird', state,
-        groundY: state.alive ? 0
-          : Math.max(0, finite(terrainHeight(target.x, target.z), 0)) };
-      const speed = bird.speed * (storm ? 1.48 : rain ? 1.2 : 1);
-      const angle = bird.phase + time * speed;
-      const aspect = 0.68 + bird.rank * 0.025;
+      beginVisual(target, state, 'bird', state.alive ? 0 : state.deathGroundY);
       const { x, y, z } = target;
-      const heading = Math.atan2(-Math.sin(angle) * bird.radius,
-        Math.cos(angle) * bird.radius * aspect);
+      const heading = target.heading;
       const forwardX = Math.sin(heading);
       const forwardZ = Math.cos(heading);
       yaw.setFromAxisAngle(vertical, heading);
-      bank.setFromAxisAngle(forward, Math.sin(angle * 1.2 + bird.phase) * (storm ? 0.23 : 0.12));
+      bank.setFromAxisAngle(forward, target.bank);
       pose.copy(yaw).multiply(bank);
+      bank.setFromAxisAngle(lateral, target.pitch);
+      pose.multiply(bank);
       const size = bird.size;
       setInstance(birds.body, slot, x, y, z, pose, 0.45 * size, 0.23 * size, 0.59 * size);
       setInstance(birds.head, slot, x + forwardX * 0.48 * size,
@@ -585,8 +668,8 @@ export function createFauna(scene, terrainHeight, options = {}) {
         y + 0.075 * size, z + forwardZ * 0.71 * size,
         pose, size, size, size);
       setInstance(birds.tails, slot, x, y, z, pose, size, size, size);
-      const wingBeat = (storm ? 0.32 : 0.16)
-        + Math.sin(time * (storm ? 7.4 : 4.3) + bird.phase * 2) * (storm ? 0.37 : 0.22);
+      const wingBeat = state.alive ? target.wingBeat
+        : 0.05 + smooth(state.deathAge / 0.4) * 0.88;
       flap.setFromAxisAngle(forward, wingBeat);
       wingPose.copy(pose).multiply(flap);
       setInstance(birds.wings, slot, x, y + 0.035, z,
@@ -606,19 +689,18 @@ export function createFauna(scene, terrainHeight, options = {}) {
       const target = targets[BIRD_COUNT + i];
       const state = life.get(target.id);
       if (!inVisualRange(target, 'sheep', playerX, playerZ)
-        || (!state.alive && state.deathAge > 1.3)) continue;
+        || (!state.alive && state.deathAge > state.deathDuration)) continue;
       const slot = visibleSheep++;
-      activeVisual = { kind: 'sheep', state: life.get(target.id),
-        groundY: target.y - 0.7 };
+      beginVisual(target, state, 'sheep', target.y - 0.7);
       const phase = i * 2.17;
       const { x, z } = target;
       const y = target.y - 0.7;
-      const heading = phase + Math.sin(time * 0.09 + phase) * 0.28;
+      const heading = target.heading;
       const forwardX = Math.sin(heading);
       const forwardZ = Math.cos(heading);
       yaw.setFromAxisAngle(vertical, heading);
       setInstance(sheep.wool, slot, x, y + 0.70, z, yaw, 1, 1, 1);
-      const grazing = storm ? 0.05 : (Math.sin(time * 0.62 + phase) + 1) * 0.13;
+      const grazing = !state.alive || storm ? 0.05 : (Math.sin(time * 0.62 + phase) + 1) * 0.13;
       const headY = y + 0.91 - grazing;
       const hx = x + forwardX * 0.63;
       const hz = z + forwardZ * 0.63;
@@ -667,10 +749,9 @@ export function createFauna(scene, terrainHeight, options = {}) {
       const target = targets[BIRD_COUNT + targetHomes.sheep.length + i];
       const state = life.get(target.id);
       if (!inVisualRange(target, 'rabbit', playerX, playerZ)
-        || (!state.alive && state.deathAge > 1.3)) continue;
+        || (!state.alive && state.deathAge > state.deathDuration)) continue;
       const slot = visibleRabbits++;
-      activeVisual = { kind: 'rabbit', state: life.get(target.id),
-        groundY: target.y - 0.36 };
+      beginVisual(target, state, 'rabbit', target.y - 0.36);
       const phase = i * 2.53;
       const playerKnown = !context.multiplayer
         && Number.isFinite(playerX) && Number.isFinite(playerZ);
@@ -678,17 +759,14 @@ export function createFauna(scene, terrainHeight, options = {}) {
       const dz = playerKnown ? home.z - playerZ : 0;
       const playerDistance = playerKnown ? Math.hypot(dx, dz) : Infinity;
       const flee = clamp((20 - playerDistance) / 16, 0, 1) * 3.6;
-      const escapeX = Number.isFinite(playerDistance) && playerDistance > 0.01
-        ? dx / playerDistance * flee : 0;
-      const escapeZ = Number.isFinite(playerDistance) && playerDistance > 0.01
-        ? dz / playerDistance * flee : 0;
       const { x, z } = target;
-      const heading = Math.atan2(escapeX + Math.cos(time * 0.37 + phase),
-        escapeZ - Math.sin(time * 0.32 + phase));
+      const heading = target.heading;
       const forwardX = Math.sin(heading);
       const forwardZ = Math.cos(heading);
       yaw.setFromAxisAngle(vertical, heading);
-      const hop = Math.max(0, Math.sin(time * 6.5 + phase)) * (flee > 0 ? 0.11 : 0.04);
+      const hop = state.alive
+        ? Math.max(0, Math.sin(time * (state.hitAge < 0.6 ? 11 : 6.5) + phase)) * (flee > 0 ? 0.11 : 0.04)
+        : 0;
       const y = target.y - 0.36 - hop;
       setInstance(rabbits.body, slot, x, y + 0.28 + hop, z, yaw, 1, 1, 1);
       const hx = x + forwardX * 0.32;
@@ -770,25 +848,66 @@ export function createFauna(scene, terrainHeight, options = {}) {
         return { ...target, alive, active: target.active && alive };
       });
     },
-    setAnimalAlive(id, alive) {
+    showCombatHit(id, { direction, damage = 20 } = {}) {
       const state = life.get(id);
-      if (!state || typeof alive !== 'boolean') return false;
+      if (disposed || !state || !state.alive) return false;
+      state.hitAge = 0;
+      state.hitStrength = clamp(finite(damage, 20) / 30, 0.4, 1.25);
+      setHitDirection(state, direction);
+      return true;
+    },
+    setAnimalAlive(id, alive, { direction } = {}) {
+      const state = life.get(id);
+      if (disposed || !state || typeof alive !== 'boolean') return false;
+      // Room state precedes cosmetic hit events. A later event may supply
+      // the impact direction without restarting an already running fall.
+      if (!alive && direction) setHitDirection(state, direction);
       if (state.alive !== alive) {
+        setHitDirection(state, direction);
         state.deathTarget = alive ? null
           : (() => {
             const target = targets.find((candidate) => candidate.id === id);
-            return target ? { x: target.x, y: target.y, z: target.z } : null;
+            return target ? { ...target } : null;
           })();
         state.alive = alive;
         state.deathAge = 0;
+        state.hitAge = Infinity;
+        state.hitStrength = 0;
+        const target = state.deathTarget;
+        if (target?.kind === 'bird') {
+          state.deathGroundY = Math.max(0, finite(terrainHeight(target.x, target.z), 0));
+          // The corpse keeps its initial momentum. Estimate the terrain at
+          // its landing point once, so drift across a cliff never settles
+          // the bird at the height of the terrain underneath the gunshot.
+          for (let iteration = 0; iteration < 3; iteration++) {
+            const impactAt = Math.sqrt(2 * Math.max(0, target.y - state.deathGroundY - 0.17) / 11.8);
+            const drift = 1 - Math.exp(-impactAt * 1.1);
+            const speed = Math.min(7, finite(target.flightSpeed, 3));
+            const landingX = target.x + (Math.sin(target.heading) * speed + state.directionX * 2.6) * drift;
+            const landingZ = target.z + (Math.cos(target.heading) * speed + state.directionZ * 2.6) * drift;
+            state.deathGroundY = Math.max(0, finite(terrainHeight(landingX, landingZ), 0));
+          }
+        }
+        state.deathDuration = target?.kind === 'bird'
+          ? Math.sqrt(2 * Math.max(0, target.y
+            - state.deathGroundY - 0.17) / 11.8) + 2.1
+          : 3.45;
       }
       return true;
+    },
+    get activeReactionCount() {
+      let count = 0;
+      for (const state of life.values()) if (state.hitAge < 0.64
+        || (!state.alive && state.deathAge <= state.deathDuration)) count++;
+      return count;
     },
     resetAnimals() {
       for (const state of life.values()) {
         state.alive = true;
         state.deathAge = 0;
         state.deathTarget = null;
+        state.hitAge = Infinity;
+        state.hitStrength = 0;
       }
     },
     dispose() {
@@ -796,6 +915,9 @@ export function createFauna(scene, terrainHeight, options = {}) {
       disposed = true;
       for (const mesh of meshes) scene.remove(mesh);
       for (const resource of resources) resource.dispose();
+      life.clear();
+      targets.length = 0;
+      activeVisual = null;
     },
   };
 }

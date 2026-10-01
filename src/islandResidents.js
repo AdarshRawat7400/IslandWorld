@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 import { createNpcAttackPresentation } from './npcAttackPresentation.js';
+import { createHumanReaction, advanceHumanReaction, resetHumanReaction,
+  triggerHumanHit, humanBoneBend } from './humanCombatReaction.js';
 
 // Six bundled, distributable MakeHuman characters are shared between distant
 // stations. Each type is downloaded once; sparse rig clones avoid multiplying
@@ -95,7 +97,8 @@ export function createIslandResidents(scene, groundHeight,
     ...site, index, baseY: groundHeight(site.x, site.z) + 0.025,
     spawnX: site.x, spawnZ: site.z, root: null, meshParts: null,
     kind: 'resident', health: 100, maxHealth: 100, dead: false, alerted: false,
-    collapse: 0, attackFaceRemaining: 0, attackTarget: null,
+    collapse: 0, reaction: createHumanReaction(index), reactionBones: [],
+    attackFaceRemaining: 0, attackTarget: null,
   }));
   const peopleById = new Map(people.map((person) => [person.id, person]));
   const cues = createNpcAttackPresentation(group);
@@ -111,6 +114,10 @@ export function createIslandResidents(scene, groundHeight,
   };
   const gunRest = new THREE.Vector3(0.36, 0.86, 0.07);
   const gunRaised = new THREE.Vector3(0.36, 1.18, 0.31);
+  const reactionAxis = new THREE.Vector3();
+  const reactionTilt = new THREE.Quaternion();
+  const boneRotation = new THREE.Quaternion();
+  const boneEuler = new THREE.Euler();
 
   function createResidentGun() {
     const gun = new THREE.Group();
@@ -140,6 +147,20 @@ export function createIslandResidents(scene, groundHeight,
   const models = new Map();
   const requested = new Set();
   let disposed = false;
+  function disposeModelSource(source) {
+    const resources = new Set();
+    source.traverse((object) => {
+      if (!object.isMesh) return;
+      if (object.geometry) resources.add(object.geometry);
+      if (object.skeleton) resources.add(object.skeleton);
+      for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+        if (!material) continue;
+        resources.add(material);
+        for (const value of Object.values(material)) if (value?.isTexture) resources.add(value);
+      }
+    });
+    for (const resource of resources) resource.dispose?.();
+  }
   async function loadModel(modelId) {
     if (requested.has(modelId)) return;
     requested.add(modelId);
@@ -148,8 +169,8 @@ export function createIslandResidents(scene, groundHeight,
       ? `/assets/sketchfab-npcs/${modelId}.glb` : `/assets/${modelId}.glb`);
     try {
       const { scene: source } = await gltfLoader.loadAsync(path);
+      if (disposed) { disposeModelSource(source); return; }
       models.set(modelId, source);
-      if (disposed) return;
       for (const person of people.filter((entry) => entry.model === modelId)) {
         const root = new THREE.Group();
         root.name = `${person.role} ${person.name}`;
@@ -186,7 +207,11 @@ export function createIslandResidents(scene, groundHeight,
         person.gun = gun;
         person.meshParts = meshParts;
         person.shadowsActive = !style?.noShadow;
-        if (person.dead) person.collapse = 1;
+        character.traverse((object) => {
+          if (object.isBone && /^(thigh_|calf_|upperarm_|lowerarm_|spine_0[23]$|head$)/i.test(object.name)) {
+            person.reactionBones.push({ bone: object, rest: object.quaternion.clone() });
+          }
+        });
       }
     } catch (error) {
       console.warn(`Could not load resident model ${modelId}`, error);
@@ -202,9 +227,11 @@ export function createIslandResidents(scene, groundHeight,
     windSpeed = 0 } = {}) {
     cues.update(dt);
     for (const person of people) {
-      person.collapse = person.dead
-        ? Math.min(1, person.collapse + Math.max(0, dt) * 2.9)
-        : Math.max(0, person.collapse - Math.max(0, dt) * 3.4);
+      if (person.dead && !person.reaction.dead) {
+        person.deathHeading = person.root?.rotation.y ?? person.heading;
+      }
+      const reaction = advanceHumanReaction(person.reaction, dt, person.dead);
+      person.collapse = reaction.collapse;
       person.attackFaceRemaining = Math.max(0,
         person.attackFaceRemaining - Math.max(0, dt));
       const dx = cameraX - person.x;
@@ -225,6 +252,7 @@ export function createIslandResidents(scene, groundHeight,
         person.shadowsActive = shadow;
       }
       person.root.position.set(person.x, person.baseY, person.z);
+      person.root.scale.y = reaction.scaleY;
       if (person.gun) {
         const raised = person.alerted && !person.dead;
         const blend = clamp(dt * 7, 0, 1);
@@ -233,8 +261,8 @@ export function createIslandResidents(scene, groundHeight,
           * blend;
       }
       if (person.dead) {
-        person.root.rotation.x = person.collapse * 1.43;
-        person.root.rotation.z = 0;
+        person.root.rotation.set(0, person.deathHeading, 0, 'YXZ');
+        applyReaction(person, reaction);
         continue;
       }
       person.root.rotation.x = 0;
@@ -246,6 +274,8 @@ export function createIslandResidents(scene, groundHeight,
           person.root.rotation.y += angleDelta(face, person.root.rotation.y)
             * clamp(dt * 2.4, 0, 1);
         }
+        person.root.rotation.x = person.root.rotation.z = 0;
+        applyReaction(person, reaction);
         continue;
       }
       const toPlayerX = playerX - person.x;
@@ -264,6 +294,20 @@ export function createIslandResidents(scene, groundHeight,
       const gust = clamp(windSpeed / 22, 0, 1) * 0.024;
       person.root.rotation.z = (windDirection?.x || 0) * gust;
       person.root.rotation.x = -(windDirection?.z || 0) * gust;
+      applyReaction(person, reaction);
+    }
+  }
+
+  function applyReaction(person, pose) {
+    reactionAxis.set(pose.fallZ, 0, -pose.fallX);
+    reactionTilt.setFromAxisAngle(reactionAxis, pose.angle);
+    person.root.quaternion.multiply(reactionTilt);
+    person.root.position.y += pose.rootOffset;
+    for (const { bone, rest } of person.reactionBones) {
+      const bend = humanBoneBend(bone.name, pose);
+      boneEuler.set(bend.x, 0, bend.z);
+      boneRotation.setFromEuler(boneEuler);
+      bone.quaternion.copy(rest).multiply(boneRotation);
     }
   }
 
@@ -299,13 +343,19 @@ export function createIslandResidents(scene, groundHeight,
     for (const state of Array.isArray(states) ? states : Object.values(states || {})) {
       const person = peopleById.get(state?.id);
       if (!person) continue;
-      if (Number.isFinite(state.x) && Number.isFinite(state.z)) {
+      const nextDead = typeof state.dead === 'boolean' ? state.dead
+        : Number.isFinite(state.health) ? state.health <= 0 : person.dead;
+      if (!(person.dead && nextDead) && Number.isFinite(state.x) && Number.isFinite(state.z)) {
         person.x = state.x;
         person.z = state.z;
         person.baseY = Number.isFinite(state.y)
           ? state.y + 0.025 : groundHeight(state.x, state.z) + 0.025;
       }
-      if (Number.isFinite(state.health)) person.health = Math.max(0, state.health);
+      if (Number.isFinite(state.health)) {
+        if (state.health < person.health && !person.dead) triggerHumanHit(person.reaction,
+          { damage: person.health - state.health, heading: person.root?.rotation.y || person.heading });
+        person.health = Math.max(0, state.health);
+      }
       if (Number.isFinite(state.maxHealth)) person.maxHealth = Math.max(1, state.maxHealth);
       if (typeof state.dead === 'boolean') person.dead = state.dead;
       else if (Number.isFinite(state.health)) person.dead = state.health <= 0;
@@ -323,14 +373,29 @@ export function createIslandResidents(scene, groundHeight,
       person.dead = person.alerted = false;
       person.targetId = null;
       person.collapse = 0;
+      resetHumanReaction(person.reaction);
       person.attackFaceRemaining = 0;
-      if (person.root) person.root.rotation.set(0, person.heading, 0, 'YXZ');
+      if (person.root) {
+        person.root.rotation.set(0, person.heading, 0, 'YXZ');
+        person.root.scale.y = 1;
+        person.root.position.set(person.x, person.baseY, person.z);
+      }
+      for (const { bone, rest } of person.reactionBones) bone.quaternion.copy(rest);
     }
   }
 
-  function showCombatHit(id) {
+  function showCombatHit(id, options = {}) {
     const person = peopleById.get(id);
-    if (person) cues.showHit({ x: person.x, y: person.baseY + 1.22, z: person.z });
+    if (!person) return;
+    triggerHumanHit(person.reaction, { ...options,
+      heading: person.root?.rotation.y ?? person.heading });
+    cues.showHit({ x: person.x, y: person.baseY + 1.22, z: person.z });
+  }
+
+  function getCombatPosition(id) {
+    const person = peopleById.get(id);
+    return person ? { x: person.x, y: person.baseY + (person.dead ? 0.35 : 1.2),
+      z: person.z } : null;
   }
 
   function showAttack(id, target, { noProjectile = false } = {}) {
@@ -351,18 +416,14 @@ export function createIslandResidents(scene, groundHeight,
     for (const geometry of Object.values(gunGeometry)) geometry.dispose();
     for (const material of Object.values(gunMaterials)) material.dispose();
     scene.remove(group);
-    for (const source of models.values()) source.traverse((object) => {
-      if (!object.isMesh) return;
-      object.geometry?.dispose();
-      for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
-        if (!material) continue;
-        for (const value of Object.values(material)) if (value?.isTexture) value.dispose();
-        material.dispose();
-      }
+    for (const person of people) person.root?.traverse((object) => {
+      if (object.isSkinnedMesh) object.skeleton?.dispose();
     });
+    for (const source of models.values()) disposeModelSource(source);
+    models.clear();
   }
 
   return { group, people, ready, update, nearestPerson, collides,
     getCombatTargets, setCombatStates, resetCombatStates,
-    showCombatHit, showAttack, dispose };
+    showCombatHit, showAttack, getCombatPosition, dispose };
 }

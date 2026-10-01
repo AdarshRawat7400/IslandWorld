@@ -44,7 +44,7 @@ Open **Private Multiplayer** in the menu, enter a name, then create an **Explore
 | Combat action (solo or room) | Desktop | Landscape touch |
 | --- | --- | --- |
 | Fire / throw / place selected item | Left mouse button | FIRE / USE |
-| Aim | Hold right mouse button | Hold AIM |
+| Aim | Hold right mouse button | Tap AIM to toggle on/off |
 | Reload | R | RELOAD |
 | Quick-switch / equipment wheel | Tap Q or Tab to switch to the next available item; hold either key, move the mouse or use A/D, then release to equip | Tap WHEEL, then an item |
 | Holster gun / roam unarmed | H toggles the last gun; 1–3 or the wheel also draw a gun | Choose the sixth, **HOLSTER**, wheel slot; choose a gun to draw it again |

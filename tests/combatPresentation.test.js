@@ -142,9 +142,9 @@ class FakeElement {
     if (!this.events.has(name)) this.events.set(name, []);
     this.events.get(name).push(callback);
   }
-  dispatch(name) {
+  dispatch(name, event = {}) {
     for (const callback of this.events.get(name) ?? []) {
-      callback({ preventDefault() {}, pointerId: 1 });
+      callback({ preventDefault() {}, pointerId: 1, ...event });
     }
   }
   find(predicate) {
@@ -448,6 +448,107 @@ test('mobile held trigger releases on pointer cancellation and menu wheel', () =
   fire.dispatch('pointerdown');
   combat.openEquipmentWheel();
   assert.deepEqual(edges, [true, false, true, false]);
+  combat.dispose();
+});
+
+test('mobile aim stays toggled through release, firing, and reload until tapped again', () => {
+  const aims = [];
+  const triggers = [];
+  let shots = 0;
+  let reloads = 0;
+  const { combat, root } = makeCombatFixture({ mobile: true,
+    onAim(value) { aims.push(value); },
+    onTriggerChange(value) { triggers.push(value); },
+    onFire() { shots += 1; }, onReload() { reloads += 1; } });
+  const aim = root.find((element) => element.attributes.get('aria-label') === 'Toggle aim');
+  const fire = root.find((element) => element.attributes.get('aria-label') === 'Fire weapon');
+  const reload = root.find((element) => element.attributes.get('aria-label') === 'Reload weapon');
+  assert.ok(aim);
+  aim.dispatch('click');
+  assert.equal(combat.aiming, true);
+  assert.equal(aim.attributes.get('aria-pressed'), 'true');
+  assert.equal(aim.textContent, 'AIM ON');
+  aim.dispatch('pointerup');
+  aim.dispatch('lostpointercapture');
+  assert.equal(combat.aiming, true);
+  fire.dispatch('pointerdown', { pointerId: 7 });
+  assert.equal(shots, 1, 'aiming permits a shot');
+  fire.dispatch('pointerup', { pointerId: 7 });
+  assert.equal(combat.aiming, true);
+  combat.setState({ serverNow: 1000, ammo: { magazine: 2, reserve: 18 } });
+  reload.dispatch('click');
+  assert.equal(reloads, 1);
+  combat.setState({ serverNow: 1000, ammo: { magazine: 2, reserve: 18,
+    reloadingUntil: 3000 } });
+  combat.update(0.1);
+  assert.equal(combat.aiming, true);
+  aim.dispatch('click');
+  assert.equal(combat.aiming, false);
+  assert.deepEqual(aims, [true, false]);
+  assert.deepEqual(triggers, [true, false]);
+  assert.equal(aim.attributes.get('aria-pressed'), 'false');
+  combat.dispose();
+});
+
+test('only the firing touch releases a held automatic trigger while aim uses another thumb', () => {
+  const triggers = [];
+  let shots = 0;
+  const { combat, root } = makeCombatFixture({ mobile: true,
+    onTriggerChange(value) { triggers.push(value); }, onFire() { shots += 1; } });
+  combat.setInventory({ guns: ['smg', 'rifle', 'revolver'] });
+  combat.selectWeapon('smg');
+  const aim = root.find((element) => element.attributes.get('aria-label') === 'Toggle aim');
+  const fire = root.find((element) => element.attributes.get('aria-label') === 'Fire weapon');
+  aim.dispatch('click', { pointerId: 2 });
+  fire.dispatch('pointerdown', { pointerId: 7 });
+  fire.dispatch('pointerup', { pointerId: 2 });
+  fire.dispatch('lostpointercapture', { pointerId: 2 });
+  fire.dispatch('pointerdown', { pointerId: 8 });
+  assert.deepEqual(triggers, [true]);
+  assert.equal(shots, 1, 'another thumb cannot restart the held trigger');
+  aim.dispatch('click', { pointerId: 2 });
+  assert.equal(combat.aiming, false);
+  assert.deepEqual(triggers, [true], 'toggling aim leaves the automatic trigger held');
+  fire.dispatch('pointercancel', { pointerId: 7 });
+  assert.deepEqual(triggers, [true, false]);
+  fire.dispatch('pointerdown', { pointerId: 9 });
+  assert.equal(shots, 2);
+  fire.dispatch('pointerup', { pointerId: 9 });
+  assert.deepEqual(triggers, [true, false, true, false]);
+  combat.dispose();
+});
+
+test('mobile aim resets on weapon changes, holster, wheel, menus, death, and removal', () => {
+  const { combat, root } = makeCombatFixture({ mobile: true });
+  const aim = root.find((element) => element.attributes.get('aria-label') === 'Toggle aim');
+  const enableAim = () => { aim.dispatch('click'); assert.equal(combat.aiming, true); };
+  enableAim();
+  combat.selectWeapon('rifle');
+  assert.equal(combat.aiming, false);
+  enableAim();
+  combat.selectEquipment('unarmed');
+  assert.equal(combat.aiming, false);
+  combat.selectWeapon('rifle');
+  enableAim();
+  combat.openEquipmentWheel();
+  assert.equal(combat.aiming, false);
+  aim.dispatch('click');
+  assert.equal(combat.aiming, false);
+  combat.closeEquipmentWheel({ commit: false });
+  enableAim();
+  combat.setState({ active: false });
+  assert.equal(combat.aiming, false);
+  combat.setState({ active: true });
+  enableAim();
+  combat.showDeath();
+  assert.equal(combat.aiming, false);
+  combat.showRespawn();
+  enableAim();
+  combat.setInventory({ guns: ['revolver'] });
+  assert.equal(combat.aiming, false);
+  enableAim();
+  combat.setAim(false);
+  assert.equal(aim.attributes.get('aria-pressed'), 'false', 'external blur reset updates the button');
   combat.dispose();
 });
 

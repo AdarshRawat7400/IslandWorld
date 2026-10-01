@@ -7,6 +7,7 @@ import { EXPLOSIVES, RESPAWN_DELAY_MS, SPAWN_PROTECTION_MS, WEAPONS }
   from '../src/multiplayerRules.js';
 import { playerEyeHeightAt, islandTerrainHeightAt } from '../src/world.js';
 import { SERVER_WILDLIFE_HOMES, wildlifeTargetsAt } from '../src/fauna.js';
+import { playerStance, stanceEyeHeight } from '../src/playerStance.js';
 
 const request = (socket, event, data = {}) => new Promise((resolve, reject) => {
   socket.timeout(2000).emit(event, data, (error, result) =>
@@ -428,6 +429,10 @@ test('Explore grenade harms wildlife but never damages players', async (t) => {
   shooter.inventory = collectItem(shooter.inventory, 'grenade');
   const state = game.room.wildlife.get(animal.id);
   const oldHealth = state.health;
+  const firstReaction = waitForCombatEvent(game.firstSocket,
+    (event) => event.kind === 'wildlife_hit' && event.id === animal.id);
+  const secondReaction = waitForCombatEvent(game.secondSocket,
+    (event) => event.kind === 'wildlife_hit' && event.id === animal.id);
   const used = await request(game.firstSocket, 'combat:use', {
     kind: 'grenade', target: { x: animal.x, z: animal.z },
   });
@@ -437,4 +442,88 @@ test('Explore grenade harms wildlife but never damages players', async (t) => {
   assert.equal(bystander.health, 100);
   assert.equal(bystander.armor, 50);
   assert.ok(state.health < oldHealth, 'the server includes nearby wildlife in blast damage');
+  const [ownReaction, witnessReaction] = await Promise.all([firstReaction, secondReaction]);
+  assert.deepEqual(ownReaction, witnessReaction);
+  assert.equal(witnessReaction.weapon, 'grenade');
+  assert.equal(witnessReaction.animalKind, 'sheep');
+  assert.equal(witnessReaction.damage, oldHealth - state.health);
+  const currentTarget = wildlifeTargetsAt(SERVER_WILDLIFE_HOMES,
+    (game.now() - game.room.world.startedAt) / 1000, 'clear',
+    { multiplayer: true, terrainHeight: islandTerrainHeightAt })
+    .find((entry) => entry.id === animal.id);
+  assert.deepEqual(witnessReaction.position,
+    { x: currentTarget.x, y: currentTarget.y, z: currentTarget.z });
+  assert.ok(Math.abs(Math.hypot(...Object.values(witnessReaction.direction)) - 1) < 1e-9);
 });
+
+for (const mode of ['pvp', 'explore']) test(`${mode} nearby grenade damage respects owner, armor and spawn protection`,
+  async (t) => {
+    const game = await fixture(t, mode);
+    const owner = game.room.players.get(game.first.selfId);
+    const protectedPlayer = game.room.players.get(game.second.selfId);
+    setPosition(owner, 100, 0);
+    setPosition(protectedPlayer, 100, -2);
+    owner.armor = 50;
+    protectedPlayer.armor = 50;
+    protectedPlayer.spawnProtectedUntil = game.now() + 10000;
+    owner.inventory = collectItem(owner.inventory, 'grenade');
+    const explosionReceived = waitForCombatEvent(game.firstSocket,
+      (event) => event.kind === 'explosion');
+    const used = await request(game.firstSocket, 'combat:use',
+      { kind: 'grenade', target: { x: 100, z: -1.5 } });
+    assert.equal(used.ok, true);
+    game.advance(EXPLOSIVES.grenade.fuseMs);
+    const explosion = await explosionReceived;
+    assert.equal(protectedPlayer.health, 100);
+    assert.equal(protectedPlayer.armor, 50);
+    if (mode === 'pvp') {
+      assert.equal(owner.armor, 0, 'own explosives first consume armor');
+      assert.ok(owner.health < 100, 'an unprotected owner is included in the blast');
+      const hit = explosion.hits.find((entry) => entry.targetId === owner.id);
+      assert.equal(hit.armorDamage, 50);
+      assert.equal(hit.healthDamage, 100 - owner.health);
+      assert.equal(hit.weapon, 'grenade');
+      assert.deepEqual(hit.position, { x: owner.x,
+        y: owner.y - playerStance(owner.stance).eyeHeight
+          + playerStance(owner.stance).hitHeight * 0.5, z: owner.z });
+    }
+    else {
+      assert.equal(owner.health, 100);
+      assert.equal(owner.armor, 50);
+      assert.equal(explosion.hits.some((entry) => entry.kind === 'player'), false);
+    }
+  });
+
+test('armed mines detect a prone body above terrain and publish the same actual impact to both players',
+  async (t) => {
+    const game = await fixture(t);
+    const owner = game.room.players.get(game.first.selfId);
+    const target = game.room.players.get(game.second.selfId);
+    setPosition(owner, 100, 0);
+    setPosition(target, 100, -6);
+    owner.inventory = collectItem(owner.inventory, 'mine');
+    game.advance(SPAWN_PROTECTION_MS + 1);
+    const used = await request(game.firstSocket, 'combat:use',
+      { kind: 'mine', target: { x: 100, z: -1.5 } });
+    assert.equal(used.ok, true);
+    target.stance = 'prone';
+    target.x = 100;
+    target.z = -2;
+    target.y = stanceEyeHeight(playerEyeHeightAt(100, -2), 'prone');
+    const firstHit = waitForCombatEvent(game.firstSocket,
+      (event) => event.kind === 'hit' && event.targetId === target.id);
+    const secondHit = waitForCombatEvent(game.secondSocket,
+      (event) => event.kind === 'hit' && event.targetId === target.id);
+    game.advance(EXPLOSIVES.mine.armMs);
+    const [first, second] = await Promise.all([firstHit, secondHit]);
+    assert.deepEqual(first, second);
+    assert.ok(target.health < 100, 'a prone player is within the mine trigger and blast range');
+    assert.ok(owner.health < 100, 'the triggering blast also harms its nearby owner');
+    assert.equal(game.room.explosives.has(used.explosive.id), false);
+    assert.equal(first.position.y, target.y - playerStance('prone').eyeHeight
+      + playerStance('prone').hitHeight * 0.5);
+    assert.ok(first.position.y > islandTerrainHeightAt(target.x, target.z),
+      'the prone body center must not be placed underground');
+    assert.equal(first.weapon, 'mine');
+    assert.equal(first.healthDamage, 100 - target.health);
+  });
