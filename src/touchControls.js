@@ -13,6 +13,7 @@ export function createTouchInput() {
   let lookPointer = null;
   let stick = { x: 0, y: 0 };
   let lookPosition = null;
+  let sprint = false;
   const held = new Map();
   const isHeld = (name) => (held.get(name)?.size ?? 0) > 0;
 
@@ -62,8 +63,10 @@ export function createTouchInput() {
       }
     },
     isHeld,
+    setSprint(active) { sprint = Boolean(active); return sprint; },
     snapshot() {
       return { forward: stick.y === 0 ? 0 : -stick.y, sideways: stick.x, steer: stick.x,
+        sprint,
         throttle: Number(isHeld('throttle')) - Number(isHeld('reverse')),
         brake: isHeld('brake'),
         ascend: Number(isHeld('ascend')), descend: Number(isHeld('descend')),
@@ -75,6 +78,7 @@ export function createTouchInput() {
       lookPosition = null;
       stick = { x: 0, y: 0 };
       held.clear();
+      sprint = false;
     },
   };
 }
@@ -85,13 +89,29 @@ export function createTouchControls(root, { onLook, onAction }) {
   const thumb = root.querySelector('#touch-stick-thumb');
   const look = root.querySelector('#touch-look');
   const action = root.querySelector('#touch-action');
+  const sprintButton = root.querySelector('#touch-sprint');
+  const moreButton = root.querySelector('#touch-more');
+  const tools = root.querySelector('#touch-tools');
+  const setToolsOpen = (open) => {
+    if (!tools || !moreButton) return;
+    tools.hidden = !open;
+    moreButton.setAttribute('aria-expanded', String(open));
+    moreButton.classList.toggle('pressed', open);
+  };
+  const paintSprint = (active) => {
+    if (!sprintButton) return;
+    if (sprintButton.classList.contains('pressed') !== active) {
+      sprintButton.classList.toggle('pressed', active);
+      sprintButton.setAttribute('aria-pressed', String(active));
+    }
+  };
   const center = () => {
     const rect = stick.getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   };
   const paintStick = () => {
     const axis = input.snapshot();
-    thumb.style.transform = `translate(${Math.round(axis.sideways * 32)}px, ${Math.round(-axis.forward * 32)}px)`;
+    thumb.style.transform = `translate(${Math.round(axis.sideways * 24)}px, ${Math.round(-axis.forward * 24)}px)`;
   };
   stick.addEventListener('pointerdown', (event) => {
     const c = center();
@@ -138,10 +158,25 @@ export function createTouchControls(root, { onLook, onAction }) {
     for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) button.addEventListener(type, release);
   }
   for (const button of root.querySelectorAll('[data-touch-action]')) {
-    button.addEventListener('click', () => onAction(button.dataset.touchAction));
+    button.addEventListener('click', () => {
+      setToolsOpen(false);
+      onAction(button.dataset.touchAction);
+    });
   }
+  moreButton?.addEventListener('click', () => setToolsOpen(tools.hidden));
   return {
     input,
+    setSprint(active) { paintSprint(input.setSprint(active)); },
+    toggleSprint() {
+      if (sprintButton?.disabled) return false;
+      const active = input.setSprint(!input.snapshot().sprint);
+      paintSprint(active);
+      return active;
+    },
+    setSprintAvailable(available) {
+      if (sprintButton && sprintButton.disabled !== !available) sprintButton.disabled = !available;
+      if (!available && input.snapshot().sprint) this.setSprint(false);
+    },
     setVisible(visible) {
       const hidden = !visible;
       if (root.hidden === hidden) return;
@@ -149,16 +184,22 @@ export function createTouchControls(root, { onLook, onAction }) {
       if (hidden) this.reset();
     },
     setMode(mode) {
-      if (root.dataset.mode !== mode) root.dataset.mode = mode;
+      if (root.dataset.mode === mode) return;
+      const previousMode = root.dataset.mode;
+      root.dataset.mode = mode;
+      if (previousMode) this.reset();
     },
     setAction(label, enabled) {
       if (action.textContent !== label) action.textContent = label;
       if (action.disabled !== !enabled) action.disabled = !enabled;
+      if (action.hidden !== !enabled) action.hidden = !enabled;
     },
     reset() {
       input.reset();
       paintStick();
       for (const button of root.querySelectorAll('[data-touch-hold]')) button.classList.remove('pressed');
+      paintSprint(false);
+      setToolsOpen(false);
     },
   };
 }

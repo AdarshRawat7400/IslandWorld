@@ -791,22 +791,29 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
   hitmarker.style.cssText = `position:absolute;left:50%;top:50%;transform:translate(-50%,-54%);
     opacity:0;color:#ffe0aa;font:400 40px Georgia,serif;transition:none;`;
   const ammoHud = doc.createElement('div');
+  ammoHud.id = 'combat-ammo';
   ammoHud.setAttribute('role', 'status');
-  ammoHud.style.cssText = `position:absolute;right:max(24px,env(safe-area-inset-right));
-    bottom:${mobile ? 'max(88px,env(safe-area-inset-bottom))' : 'max(24px,env(safe-area-inset-bottom))'};padding:10px 14px;
-    background:#0b2028bc;border:1px solid #d9c69f70;min-width:${mobile ? '116px' : '160px'};text-align:right;
-    font-size:14px;letter-spacing:.07em;`;
+  ammoHud.style.cssText = `position:absolute;right:max(${mobile ? '12px' : '24px'},env(safe-area-inset-right));
+    bottom:${mobile ? 'calc(var(--mobile-combat-bottom,12px) + 116px + env(safe-area-inset-bottom,0px))' : 'max(24px,env(safe-area-inset-bottom))'};
+    padding:${mobile ? '5px 8px' : '10px 14px'};
+    background:${mobile ? '#0b2028a8' : '#0b2028bc'};border:1px solid #d9c69f70;border-radius:${mobile ? '8px' : '0'};
+    min-width:${mobile ? '88px' : '160px'};text-align:right;
+    font-size:${mobile ? '11px' : '14px'};letter-spacing:.07em;`;
   const healthHud = doc.createElement('div');
+  healthHud.id = 'combat-health';
   healthHud.style.cssText = `position:absolute;
-    left:max(${mobile ? '16px' : '24px'},env(safe-area-inset-left));
-    ${mobile ? 'top:max(69px,env(safe-area-inset-top))' : 'bottom:max(24px,env(safe-area-inset-bottom))'};
-    padding:${mobile ? '7px 10px' : '9px 12px'};
-    background:#0b2028bc;border:1px solid #d9c69f70;font-size:12px;
-    letter-spacing:.09em;min-width:${mobile ? '118px' : '155px'};`;
+    left:max(${mobile ? '12px' : '24px'},env(safe-area-inset-left));
+    ${mobile ? 'top:calc(var(--mobile-health-top,58px) + env(safe-area-inset-top,0px))' : 'bottom:max(24px,env(safe-area-inset-bottom))'};
+    padding:${mobile ? '5px 7px' : '9px 12px'};
+    background:${mobile ? '#0b2028a8' : '#0b2028bc'};border:1px solid #d9c69f70;border-radius:${mobile ? '8px' : '0'};
+    font-size:${mobile ? '9px' : '12px'};
+    letter-spacing:${mobile ? '.06em' : '.09em'};min-width:${mobile ? '108px' : '155px'};`;
   const modeHud = doc.createElement('div');
-  modeHud.style.cssText = `position:absolute;left:50%;top:15px;
+  modeHud.id = 'combat-mode';
+  modeHud.style.cssText = `position:absolute;left:50%;top:${mobile ? 'calc(8px + env(safe-area-inset-top,0px))' : '15px'};
     transform:translateX(-50%);padding:5px 9px;background:#0b2028ba;
-    border:1px solid #d9c69f70;font-size:11px;letter-spacing:.13em;white-space:nowrap;`;
+    border:1px solid #d9c69f70;border-radius:${mobile ? '6px' : '0'};
+    font-size:${mobile ? '9px' : '11px'};letter-spacing:${mobile ? '.09em' : '.13em'};white-space:nowrap;`;
   const damage = doc.createElement('div');
   damage.setAttribute('aria-hidden', 'true');
   damage.style.cssText = `position:absolute;inset:0;opacity:0;
@@ -822,19 +829,34 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
   respawnButton.style.cssText += 'pointer-events:auto;padding:12px 20px;font-size:13px;';
   death.append(deathLabel, respawnButton);
   const mobileButtons = doc.createElement('div');
-  mobileButtons.style.cssText = `position:absolute;right:max(16px,env(safe-area-inset-right));
-    bottom:152px;display:none;gap:7px;align-items:flex-end;pointer-events:auto;`;
+  mobileButtons.id = 'combat-mobile-controls';
+  mobileButtons.className = 'combat-mobile-controls';
+  mobileButtons.setAttribute('aria-label', 'Combat controls');
+  mobileButtons.style.cssText = `position:absolute;right:max(12px,env(safe-area-inset-right));
+    bottom:calc(var(--mobile-combat-bottom,12px) + env(safe-area-inset-bottom,0px));
+    display:none;grid-template-columns:48px 58px;grid-template-rows:58px 44px;
+    gap:6px;align-items:end;pointer-events:auto;`;
   const fireButton = makeButton(doc, 'FIRE', 'Fire weapon');
-  fireButton.style.minWidth = '72px';
-  fireButton.style.minHeight = '68px';
-  fireButton.style.background = '#5b342bdc';
-  const secondary = doc.createElement('div');
-  secondary.style.cssText = 'display:flex;flex-direction:column;gap:7px;';
+  fireButton.id = 'combat-fire';
+  fireButton.style.cssText += `width:58px;height:58px;min-width:58px;min-height:58px;
+    padding:0;border-radius:50%;background:#5b342bc4;font-size:11px;
+    grid-column:2;grid-row:1;`;
   const aimButton = makeButton(doc, 'AIM', 'Hold to aim');
   const reloadButton = makeButton(doc, 'RELOAD', 'Reload weapon');
   const wheelButton = makeButton(doc, 'WHEEL', 'Open equipment wheel');
-  secondary.append(aimButton, reloadButton, wheelButton);
-  mobileButtons.append(secondary, fireButton);
+  for (const [button, id] of [[aimButton, 'combat-aim'],
+    [reloadButton, 'combat-reload'], [wheelButton, 'combat-wheel']]) {
+    button.id = id;
+    button.style.cssText += `min-width:44px;min-height:44px;height:44px;
+      padding:0 3px;border-radius:50%;font-size:9px;letter-spacing:.03em;
+      background:#0b2028a8;`;
+  }
+  aimButton.style.cssText += 'grid-column:1;grid-row:1;';
+  reloadButton.style.cssText += 'grid-column:1;grid-row:2;';
+  wheelButton.style.cssText += 'grid-column:2;grid-row:2;';
+  // Two short rows keep the right thumb's reach small and leave the horizon
+  // available for looking. Equipment and holstering stay in the on-demand wheel.
+  mobileButtons.append(aimButton, fireButton, reloadButton, wheelButton);
   const wheelOverlay = doc.createElement('div');
   wheelOverlay.setAttribute('aria-label', 'Equipment wheel');
   wheelOverlay.style.cssText = `position:absolute;inset:0;display:none;pointer-events:none;`;
@@ -966,18 +988,21 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
       group.visible = selectedEquipment === id;
     }
     if (!state.active) return;
-    modeHud.textContent = state.mode === 'pvp' ? 'PVP · PLAYER DAMAGE ON'
-      : state.mode === 'solo' ? 'SOLO · NPCS RESPOND TO GUNFIRE'
-        : 'EXPLORE · NO PLAYER-VS-PLAYER DAMAGE';
+    modeHud.textContent = mobile
+      ? state.mode === 'pvp' ? 'PVP · DAMAGE ON'
+        : state.mode === 'solo' ? 'SOLO' : 'EXPLORE · SAFE'
+      : state.mode === 'pvp' ? 'PVP · PLAYER DAMAGE ON'
+        : state.mode === 'solo' ? 'SOLO · NPCS RESPOND TO GUNFIRE'
+          : 'EXPLORE · NO PLAYER-VS-PLAYER DAMAGE';
     ammoHud.hidden = !visibility.ammo || unarmed;
     const explosive = selectedEquipment === 'grenade' || selectedEquipment === 'mine';
     const selectedCount = selectedEquipment === 'grenade' ? inventory.grenades : inventory.mines;
     const ammoMessage = explosive ? `× ${selectedCount}`
       : state.reloading ? 'RELOADING' : `${state.magazine} / ${state.reserve}`;
     const title = explosive ? selectedEquipment.toUpperCase() : state.weaponLabel.toUpperCase();
-    ammoHud.innerHTML = `<span style="font-size:10px;color:#dec998">${title}</span><br>
-      <strong style="font-size:24px;font-weight:600">${ammoMessage}</strong>
-      ${explosive ? '<br><small style="font-size:10px;color:#dec998">USE TO DEPLOY</small>' : ''}`;
+    ammoHud.innerHTML = `<span style="font-size:${mobile ? '8px' : '10px'};color:#dec998">${title}</span><br>
+      <strong style="font-size:${mobile ? '18px' : '24px'};font-weight:600">${ammoMessage}</strong>
+      ${explosive && !mobile ? '<br><small style="font-size:10px;color:#dec998">USE TO DEPLOY</small>' : ''}`;
     const healthColor = healthFeedbackTime > 0 && healthFeedback === 'healed'
       ? '#7ce0ac' : state.health < 30 ? '#ed7773'
         : state.health < 60 ? '#e8bd70' : '#b4d79e';
@@ -986,19 +1011,19 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     healthHud.style.borderColor = healthFeedbackTime > 0
       ? healthFeedback === 'healed' ? '#79dca0' : '#e87670' : '#d9c69f70';
     healthHud.innerHTML = `<div style="display:flex;justify-content:space-between;gap:8px">
-      <span>HEALTH</span><strong>${state.health} / ${MAX_HEALTH}</strong></div>
+      <span>HEALTH</span><strong>${mobile ? state.health : `${state.health} / ${MAX_HEALTH}`}</strong></div>
       ${healthStatus ? `<small style="display:block;color:${healthColor};margin-top:3px">${healthStatus}</small>` : ''}
       <div role="progressbar" aria-label="Health" aria-valuemin="0"
         aria-valuemax="${MAX_HEALTH}" aria-valuenow="${state.health}"
-        style="height:8px;margin-top:7px;background:#26383a;border:1px solid #78918b7d;border-radius:6px;overflow:hidden">
+        style="height:${mobile ? '4px' : '8px'};margin-top:${mobile ? '3px' : '7px'};background:#26383a;border:1px solid #78918b7d;border-radius:6px;overflow:hidden">
       <div style="width:${state.health}%;height:100%;background:${healthColor};
         box-shadow:0 0 9px ${healthColor};transition:width .14s linear"></div></div>
       <div style="display:flex;justify-content:space-between;gap:8px;
-        margin-top:6px;color:#b8d8e9"><span>ARMOR</span>
-        <strong>${state.armor} / ${MAX_ARMOR}</strong></div>
+        margin-top:${mobile ? '3px' : '6px'};color:#b8d8e9"><span>ARMOR</span>
+        <strong>${mobile ? state.armor : `${state.armor} / ${MAX_ARMOR}`}</strong></div>
       <div role="progressbar" aria-label="Armor" aria-valuemin="0"
         aria-valuemax="${MAX_ARMOR}" aria-valuenow="${state.armor}"
-        style="height:6px;margin-top:5px;background:#26383a;border:1px solid #6f94a47d;border-radius:6px;overflow:hidden">
+        style="height:${mobile ? '3px' : '6px'};margin-top:${mobile ? '3px' : '5px'};background:#26383a;border:1px solid #6f94a47d;border-radius:6px;overflow:hidden">
       <div style="width:${state.armor}%;height:100%;background:#81c4d9;
         box-shadow:0 0 8px #81c4d9;transition:width .14s linear"></div></div>
       ${state.protected ? `<small style="color:#d9c69f">SPAWN PROTECTION${state.protectedUntil > 0 ? ` · ${Math.ceil((state.protectedUntil - state.serverNow) / 1000)}s` : ''}</small>` : ''}`;
@@ -1006,7 +1031,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     const respawnRemaining = Math.max(0, Math.ceil((state.respawnAt - state.serverNow) / 1000));
     respawnButton.disabled = respawnRemaining > 0;
     respawnButton.textContent = respawnRemaining > 0 ? `RESPAWN IN ${respawnRemaining}s` : 'RESPAWN';
-    mobileButtons.style.display = visibility.mobileControls ? 'flex' : 'none';
+    mobileButtons.style.display = visibility.mobileControls ? 'grid' : 'none';
     wheelOverlay.style.display = wheelOpen ? 'block' : 'none';
     crosshair.style.display = visibility.crosshair && !wheelOpen && !unarmed
       ? 'block' : 'none';

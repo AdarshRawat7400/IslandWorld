@@ -652,10 +652,14 @@ function onLook(dx, dy) {
   player.yaw -= dx * 0.0021;
   player.pitch = clamp(player.pitch - dy * 0.0021, -1.45, 1.45);
 }
-const touchEnabled = useTouchControls({
+// Exercise the real touch HUD with a desktop browser's phone-size viewport.
+const touchQaEnabled = import.meta.env.DEV
+  && new URLSearchParams(location.search).get('touch') === '1';
+const touchEnabled = touchQaEnabled || useTouchControls({
   primaryCoarse: window.matchMedia('(pointer: coarse)').matches,
   anyFine: window.matchMedia('(any-pointer: fine)').matches,
 });
+document.body.classList.toggle('touch-ui', touchEnabled);
 const touchControls = createTouchControls($('touch-controls'), {
   onLook,
   onAction(action) {
@@ -663,10 +667,9 @@ const touchControls = createTouchControls($('touch-controls'), {
     else if (action === 'map') mapOpen ? closeMap() : openMap();
     else if (action === 'interact') drone.active ? toggleDrone() : interact();
     else if (action === 'drone') toggleDrone();
-    else if (action === 'crouch') setPlayerStance(
-      togglePlayerStance(player.stance, 'crouch'));
-    else if (action === 'prone') setPlayerStance(
-      togglePlayerStance(player.stance, 'prone'));
+    else if (action === 'stance') setPlayerStance(
+      { stand: 'crouch', crouch: 'prone', prone: 'stand' }[player.stance]);
+    else if (action === 'sprint' && player.stance === 'stand') touchControls.toggleSprint();
     else if (action === 'light') { flashlightOn = !flashlightOn; flashlight.visible = flashlightOn; }
     else if (action === 'audio') toggleAudio();
   },
@@ -1432,14 +1435,14 @@ function refreshTouchUi() {
   if (!touchEnabled) return;
   const mode = drone.active ? 'drone' : driving.active ? 'driving' : 'walking';
   touchControls.setMode(mode);
-  for (const [id, selected] of [
-    ['touch-crouch', player.stance === 'crouch'],
-    ['touch-prone', player.stance === 'prone'],
-  ]) {
-    const button = $(id);
-    if (button.classList.contains('pressed') !== selected) {
-      button.classList.toggle('pressed', selected);
-    }
+  touchControls.setSprintAvailable(mode === 'walking' && player.stance === 'stand'
+    && cliffFall.phase === 'grounded');
+  const stanceLabel = player.stance === 'stand' ? 'STAND' : player.stance.toUpperCase();
+  if ($('touch-stance-label').textContent !== stanceLabel) {
+    $('touch-stance-label').textContent = stanceLabel;
+    const posture = { stand: 'standing', crouch: 'crouching', prone: 'prone' }[player.stance];
+    $('touch-stance').setAttribute('aria-label', `Change posture, currently ${posture}`);
+    $('touch-stance').classList.toggle('pressed', player.stance !== 'stand');
   }
   const nearby = !drone.active && !driving.active ? nearbyInteraction() : null;
   touchControls.setAction(drone.active ? 'EXIT DRONE' : driving.active ? 'EXIT CAR'
@@ -1701,7 +1704,7 @@ function frame(now) {
       const magnitude = Math.hypot(forward, side);
       if (magnitude > 0) {
         const stance = playerStance(player.stance);
-        const speed = keys.has('ShiftLeft') || keys.has('ShiftRight')
+        const speed = keys.has('ShiftLeft') || keys.has('ShiftRight') || controls.sprint
           ? stance.runSpeed : stance.walkSpeed;
         const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
         const rx = Math.cos(player.yaw), rz = -Math.sin(player.yaw);

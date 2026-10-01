@@ -38,7 +38,7 @@ test('driving pedals work with simultaneous steering and clear on pause', () => 
   assert.equal(input.snapshot().throttle, -1);
   input.reset();
   assert.deepEqual(input.snapshot(), {
-    forward: 0, sideways: 0, steer: 0, throttle: 0, brake: false,
+    forward: 0, sideways: 0, steer: 0, sprint: false, throttle: 0, brake: false,
     ascend: 0, descend: 0, boost: false,
   });
 });
@@ -134,4 +134,157 @@ test('touch HUD removes its initial hidden attribute and avoids per-frame DOM wr
   assert.equal(hiddenWrites, 2);
   assert.equal(thumbWrites, 1);
   assert.equal(controls.input.snapshot().forward, 0);
+});
+
+function touchHudFixture({ onAction = () => {}, onLook = () => {} } = {}) {
+  const element = (dataset = {}) => {
+    const listeners = new Map();
+    const classes = new Set();
+    const attributes = new Map();
+    return {
+      dataset, attributes, hidden: false, disabled: false, textContent: '', style: {},
+      classList: {
+        contains: (name) => classes.has(name),
+        add: (name) => classes.add(name),
+        remove: (name) => classes.delete(name),
+        toggle(name, active) {
+          const selected = active ?? !classes.has(name);
+          if (selected) classes.add(name); else classes.delete(name);
+          return selected;
+        },
+      },
+      addEventListener(type, listener) {
+        if (!listeners.has(type)) listeners.set(type, []);
+        listeners.get(type).push(listener);
+      },
+      setAttribute(name, value) { attributes.set(name, value); },
+      setPointerCapture() {},
+      getBoundingClientRect() { return { left: 50, top: 50, width: 100, height: 100 }; },
+      dispatch(type, pointer = {}) {
+        for (const listener of listeners.get(type) ?? []) {
+          listener({ pointerId: 1, clientX: 100, clientY: 100,
+            preventDefault() {}, ...pointer });
+        }
+      },
+    };
+  };
+  const stick = element();
+  const thumb = element();
+  const look = element();
+  const action = element({ touchAction: 'interact' });
+  const sprint = element({ touchAction: 'sprint' });
+  const more = element();
+  const tools = element();
+  tools.hidden = true;
+  const map = element({ touchAction: 'map' });
+  const throttle = element({ touchHold: 'throttle' });
+  const selectors = { '#touch-stick': stick, '#touch-stick-thumb': thumb,
+    '#touch-look': look, '#touch-action': action, '#touch-sprint': sprint,
+    '#touch-more': more, '#touch-tools': tools };
+  const root = {
+    hidden: true, dataset: {},
+    querySelector: (selector) => selectors[selector],
+    querySelectorAll(selector) {
+      return selector === '[data-touch-hold]' ? [throttle]
+        : selector === '[data-touch-action]' ? [action, sprint, map] : [];
+    },
+  };
+  const controls = createTouchControls(root, { onAction, onLook });
+  return { root, controls, stick, look, sprint, more, tools, map, throttle, action };
+}
+
+test('sprint toggles without taking movement or look away from the two thumbs', () => {
+  const lookDeltas = [];
+  let hud;
+  hud = touchHudFixture({
+    onLook: (dx, dy) => lookDeltas.push([dx, dy]),
+    onAction: (action) => { if (action === 'sprint') hud.controls.toggleSprint(); },
+  });
+  hud.controls.setVisible(true);
+  hud.controls.setMode('walking');
+  hud.stick.dispatch('pointerdown', { pointerId: 1, clientY: 40 });
+  hud.look.dispatch('pointerdown', { pointerId: 2, clientX: 500, clientY: 200 });
+  hud.sprint.dispatch('click');
+  assert.equal(hud.controls.input.snapshot().sprint, true);
+  assert.equal(hud.sprint.attributes.get('aria-pressed'), 'true');
+  hud.look.dispatch('pointermove', { pointerId: 2, clientX: 520, clientY: 207 });
+  assert.deepEqual(lookDeltas, [[20, 7]]);
+  assert.ok(hud.controls.input.snapshot().forward > 0.9);
+  hud.look.dispatch('pointercancel', { pointerId: 2 });
+  assert.ok(hud.controls.input.snapshot().forward > 0.9);
+  assert.equal(hud.controls.input.snapshot().sprint, true);
+  hud.sprint.dispatch('click');
+  assert.equal(hud.controls.input.snapshot().sprint, false);
+  assert.equal(hud.sprint.attributes.get('aria-pressed'), 'false');
+});
+
+test('hiding controls and changing movement mode clear sprint, pointers and pedals', () => {
+  const hud = touchHudFixture();
+  hud.controls.setVisible(true);
+  hud.controls.setMode('walking');
+  const activate = () => {
+    hud.stick.dispatch('pointerdown', { pointerId: 1, clientY: 40 });
+    hud.look.dispatch('pointerdown', { pointerId: 2 });
+    hud.throttle.dispatch('pointerdown', { pointerId: 3 });
+    hud.controls.setSprint(true);
+    hud.more.dispatch('click');
+  };
+  activate();
+  hud.controls.setMode('walking');
+  assert.equal(hud.controls.input.snapshot().sprint, true);
+  assert.ok(hud.controls.input.snapshot().forward > 0.9);
+  const assertReset = () => {
+    const snapshot = hud.controls.input.snapshot();
+    assert.equal(snapshot.sprint, false);
+    assert.equal(snapshot.forward, 0);
+    assert.equal(snapshot.throttle, 0);
+    assert.equal(hud.controls.input.moveLook(2, 200, 200), null);
+    assert.equal(hud.sprint.classList.contains('pressed'), false);
+    assert.equal(hud.tools.hidden, true);
+    assert.equal(hud.more.attributes.get('aria-expanded'), 'false');
+  };
+  hud.controls.setMode('driving');
+  assertReset();
+  hud.controls.setMode('walking');
+  activate();
+  hud.controls.setVisible(false);
+  assertReset();
+  hud.controls.setVisible(true);
+  assert.equal(hud.controls.input.snapshot().sprint, false);
+});
+
+test('crouching can disable sprint without cancelling movement or looking', () => {
+  const hud = touchHudFixture();
+  hud.controls.input.startStick(1, 100, 40, 100, 100);
+  hud.controls.input.startLook(2, 500, 200);
+  hud.controls.toggleSprint();
+  hud.controls.setSprintAvailable(false);
+  assert.equal(hud.sprint.disabled, true);
+  assert.equal(hud.controls.input.snapshot().sprint, false);
+  assert.equal(hud.controls.toggleSprint(), false);
+  assert.ok(hud.controls.input.snapshot().forward > 0.9);
+  assert.deepEqual(hud.controls.input.moveLook(2, 505, 203), { x: 5, y: 3 });
+  hud.controls.setSprintAvailable(true);
+  assert.equal(hud.sprint.disabled, false);
+  assert.equal(hud.controls.input.snapshot().sprint, false);
+  assert.equal(hud.controls.toggleSprint(), true);
+});
+
+test('secondary tools stay folded after an action and USE appears only when useful', () => {
+  const actions = [];
+  const hud = touchHudFixture({ onAction: (action) => actions.push(action) });
+  hud.more.dispatch('click');
+  assert.equal(hud.tools.hidden, false);
+  assert.equal(hud.more.attributes.get('aria-expanded'), 'true');
+  hud.map.dispatch('click');
+  assert.deepEqual(actions, ['map']);
+  assert.equal(hud.tools.hidden, true);
+  assert.equal(hud.more.attributes.get('aria-expanded'), 'false');
+  hud.controls.setAction('USE', false);
+  assert.equal(hud.action.hidden, true);
+  assert.equal(hud.action.disabled, true);
+  hud.controls.setAction('TALK', true);
+  assert.equal(hud.action.hidden, false);
+  assert.equal(hud.action.disabled, false);
+  assert.equal(hud.action.textContent, 'TALK');
 });
