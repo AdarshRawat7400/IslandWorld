@@ -136,6 +136,23 @@ The sea uses a shared wave field in [`src/oceanWaveField.js`](src/oceanWaveField
 
 The existing WebGL2 cloud renderer uses one locally generated 48³ density texture and at most eight ray steps on desktop; the mobile render profiles lower that cap to six, five, or four. Rain uses one shader-instanced field with a maximum of 16,000 drops and scales the active count with precipitation. The moonlight casts no shadow map, keeping the night scene's additional lighting cost modest.
 
+## Vintage night lamps
+
+Greywake has 68 original cast-iron lanterns along road verges, landing paths,
+entrances and lake approaches. Warm glass sources fade on at dusk and switch off
+in daylight; rain changes the metal and glass roughness. Nearby lamps illuminate
+the actual roads, grass and buildings with soft falloff. Lamp bases block walking
+and driving, while road lanes and building entrances stay clear.
+
+The fixtures use four instanced mesh draws and three small generated texture
+maps. A fixed pool provides four nearby lights and one 512-pixel shadow map on
+desktop, or two lights without additional shadows on mobile. Light pools fade
+between nearby fixtures as the player moves; distant lanterns retain their
+visible glow. Placement is deterministic, and multiplayer uses the
+shared weather and clock without networking individual light or foliage updates.
+In development, `?test=night_lamps&weather=storm&time=night` provides a ground-level
+lighting check; add `&qaQuality=low` to inspect the mobile lighting budget.
+
 ## Assets and licenses
 
 The original project authored its island layout, procedural geometry, effects, and interaction code. Reused materials, character models, recordings, code components, and fonts are credited in [`CREDITS.md`](CREDITS.md). The full notices are in [`public/THIRD_PARTY_LICENSES.md`](public/THIRD_PARTY_LICENSES.md), with exact media origins and checksums in the `SOURCES.md` files under `public/assets/`. The [Sketchfab NPC review](SKETCHFAB_NPC_REVIEW.md) records considered and excluded models. Preserve these notices when distributing a build. No proprietary grass package or Free3D grass model is included.

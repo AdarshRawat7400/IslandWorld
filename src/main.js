@@ -13,6 +13,7 @@ import { createAmbientTraffic } from './ambientTraffic.js';
 import { createPrisonPopulation } from './prisonPopulation.js';
 import { createIslandResidents } from './islandResidents.js';
 import { createHarborProps } from './harborProps.js';
+import { createIslandLamps } from './islandLamps.js';
 import { createPumpInterior } from './pumpInterior.js';
 import { createFauna, WILDLIFE_KINDS } from './fauna.js';
 import { createLootWorld } from './lootWorld.js';
@@ -103,7 +104,7 @@ scene.add(camera);
 const cinematicCapture = captureEnabled ? createCinematicCapture(camera) : null;
 const ordinaryRenderProfile = selectRenderProfile(detectRenderEnvironment());
 const combatDiagnosticProfile = import.meta.env.DEV
-  && new URLSearchParams(location.search).get('test') === 'combat'
+  && ['combat', 'night_lamps'].includes(new URLSearchParams(location.search).get('test'))
   && new URLSearchParams(location.search).get('qaQuality') === 'low';
 const captureQuality = new URLSearchParams(location.search).get('captureQuality');
 const renderProfile = combatDiagnosticProfile
@@ -143,6 +144,7 @@ $('game').appendChild(renderer.domElement);
 const world = createWorld(scene, camera, { renderProfile });
 const lighthouseGlare = createLighthouseGlare($('lighthouse-glare'), world.terrainHeight);
 const structures = createEnvironmentStructures(scene, world);
+let islandLamps = null;
 const roads = createRoads(scene, world.terrainHeight);
 const dressing = createSetDressing(scene, world.terrainHeight);
 const ancillary = createAncillaryBuildings(scene, world.terrainHeight, SITES);
@@ -189,7 +191,7 @@ const fauna = createFauna(scene, world.terrainHeight, {
   isBlocked: (x, z, radius) => world.isLake(x, z, radius + 2)
     || circlesBlock(x, z, radius, world.natureObstacles)
     || dressing.collides(x, z, radius) || ancillary.blocksMove(x, z, radius)
-    || harborProps.collides(x, z, radius),
+    || harborProps.collides(x, z, radius) || islandLamps?.collides(x, z, radius),
 });
 const sound = createAudio();
 const music = createMusic();
@@ -207,6 +209,8 @@ if (waterQaView === 'lake') {
     yaw: 0, pitch: -0.08 });
 } else if (waterQaView === 'combat') {
   Object.assign(player, { x: -141, z: -75, yaw: -Math.PI / 2, pitch: -0.05 });
+} else if (waterQaView === 'night_lamps') {
+  Object.assign(player, { x: -105, z: 181, yaw: 0, pitch: -0.025 });
 } else if (waterQaView === 'flora') {
   Object.assign(player, { x: -141, z: -75, yaw: -Math.PI / 2, pitch: -0.08 });
 } else if (waterQaView === 'ocean') {
@@ -271,6 +275,7 @@ function canStandAt(x, z, checkPeople = true, fromX = null, fromZ = null) {
   if (circlesBlock(x, z, PLAYER_RADIUS, world.natureObstacles)) return false;
   if (dressing.collides(x, z, PLAYER_RADIUS)) return false;
   if (harborProps.collides(x, z, PLAYER_RADIUS)) return false;
+  if (islandLamps?.collides(x, z, PLAYER_RADIUS)) return false;
   if (ancillary.blocksMove(x, z, PLAYER_RADIUS)) return false;
   if (pumpInterior.blocksMove(x, z, PLAYER_RADIUS)) return false;
   if (radioFurnitureBlocks(siteById.radio, x, z, PLAYER_RADIUS)
@@ -293,6 +298,7 @@ function canPlaceVehicle(x, z, vehicle, radius = 0.42, ignoreAmbient = false) {
   if (ancillary.blocksMove(x, z, radius) || pumpInterior.blocksMove(x, z, radius)) return false;
   if (dressing.collides(x, z, radius, vehicle?.id)) return false;
   if (harborProps.collides(x, z, radius)) return false;
+  if (islandLamps?.collides(x, z, radius)) return false;
   if (!ignoreAmbient && ambientTraffic?.collides(x, z, radius)) return false;
   if (prisonPopulation.collides(x, z, radius)) return false;
   if (residents?.collides(x, z, radius)) return false;
@@ -315,6 +321,22 @@ residents = createIslandResidents(scene, structures.playerGroundHeight, {
       && !prisonPopulation.collides(x, z, radius);
   },
   isRoad,
+});
+islandLamps = createIslandLamps(scene, {
+  terrainHeight: world.terrainHeight, groundHeight: structures.playerGroundHeight,
+  isWalkable: (x, z) => world.isWalkable(x, z) || structures.onSouthPier(x, z),
+  isLake: world.isLake, profile: renderProfile,
+  canPlace: (x, z, radius = 0.28) => !world.isLake(x, z, radius + 1.1)
+    && !circlesBlock(x, z, radius + 0.5, world.natureObstacles)
+    && !SITES.some(site => site.kind === 'building'
+      && Math.abs(x - site.x) < site.scale[0] * 0.52 + radius
+      && Math.abs(z - site.z) < site.scale[1] * 0.52 + radius)
+    && !dressing.collides(x, z, radius + 0.4)
+    && !harborProps.collides(x, z, radius + 0.4)
+    && !ancillary.blocksMove(x, z, radius + 0.4)
+    && !pumpInterior.blocksMove(x, z, radius + 0.4)
+    && !prisonPopulation.collides(x, z, radius + 0.6)
+    && !residents.collides(x, z, radius + 0.6),
 });
 
 function tryPlayerStep(x, z) {
@@ -2158,6 +2180,10 @@ function frame(now) {
   world.setIndoor(sheltered);
   const thunder = world.update(dt, elapsed, weather, climate,
     cinematicCapture?.active ? cinematicCapture.state() : null);
+  islandLamps.update(dt, elapsed, { ...climate, wetness: world.groundWetness }, camera);
+  if (waterQaView === 'night_lamps') {
+    renderer.domElement.dataset.lamps = JSON.stringify(islandLamps.getState());
+  }
   lighthouseGlare.update(camera, world.lighthouseBeacons,
     started && !menuOpen && !mapOpen);
   windSpray.update(dt, elapsed, weather, { indoors: sheltered,
