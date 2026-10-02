@@ -29,7 +29,9 @@ function Get-FileSha256([string]$Path) {
 }
 
 function Test-BrowserOnlyFile([string]$RelativePath) {
+    # Promotional media belongs to the website, not the bundled game world.
     return ($RelativePath -in @('android.html', 'android-release.json')) `
+        -or ($RelativePath -match '^assets/promotional/') `
         -or ($RelativePath -match '^downloads/.*\.apk$')
 }
 

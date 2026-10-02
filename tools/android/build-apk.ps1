@@ -24,6 +24,19 @@ try {
         $webOnlyPath = Join-Path $bundledRoot $webOnlyFile
         if (Test-Path -LiteralPath $webOnlyPath) { Remove-Item -LiteralPath $webOnlyPath }
     }
+    # Landing-page trailers and posters are browser-only; avoid increasing APK size.
+    $bundledPromotional = Join-Path $bundledRoot 'assets/promotional'
+    if (Test-Path -LiteralPath $bundledPromotional -PathType Container) {
+        $resolvedBundledRoot = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $bundledRoot).ProviderPath).TrimEnd('\', '/')
+        $resolvedPromotional = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $bundledPromotional).ProviderPath)
+        if (-not $resolvedPromotional.StartsWith($resolvedBundledRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Browser-only promotional directory must be inside the bundled public assets.'
+        }
+        if ((Get-Item -LiteralPath $resolvedPromotional).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'Browser-only promotional directory must not be a symbolic link or junction.'
+        }
+        Remove-Item -LiteralPath $resolvedPromotional -Recurse -Force
+    }
     if ($bundledDownloads.StartsWith($bundledRoot + [IO.Path]::DirectorySeparatorChar) -and (Test-Path -LiteralPath $bundledDownloads)) {
         Get-ChildItem -LiteralPath $bundledDownloads -File -Filter '*.apk' -Recurse | ForEach-Object { Remove-Item -LiteralPath $_.FullName }
     }

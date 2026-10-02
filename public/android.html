@@ -9,6 +9,7 @@
   <title>IslandWorld — Android</title>
   <style>
     *{box-sizing:border-box}body{margin:0;background:#081b24;color:#e9eee9;font:16px/1.65 system-ui,sans-serif;min-height:100vh;display:grid;place-items:center;padding:28px 20px}main{max-width:680px;width:100%}.brand{display:flex;gap:22px;align-items:center}.brand img{width:112px;height:112px;border-radius:25px;box-shadow:0 12px 40px #0006}h1{font-size:clamp(32px,7vw,48px);line-height:1.1;margin:0 0 8px;letter-spacing:.035em}.eyebrow{font-size:12px;letter-spacing:.18em;color:#dfc998}p{color:#bac9ca}.actions{display:flex;gap:12px;flex-wrap:wrap;margin:26px 0}a{color:#dfc998}.button{display:inline-block;border:1px solid #577079;border-radius:10px;padding:14px 22px;text-decoration:none;font-weight:650}.button.primary{background:#dfc998;color:#081b24;border-color:#dfc998}.button:hover{filter:brightness(1.12)}.details{background:#102a33;border:1px solid #28454e;border-radius:14px;padding:18px 22px;margin:22px 0}.details p{margin:6px 0}.small{font-size:13px;color:#94aeb3}code{overflow-wrap:anywhere;font-size:11px;color:#b5cacb}ol{padding-left:24px}li{margin:9px 0}footer{border-top:1px solid #28454e;padding-top:15px;margin-top:30px}.checksum{margin-top:18px}@media(max-width:420px){.brand{gap:14px}.brand img{width:86px;height:86px}}
+    .watch{margin:30px 0}.watch h2{color:#dfc998;font-size:24px;margin:0 0 14px}.watch h3{font-size:18px;margin:0}.watch p{margin:4px 0 14px}.video-frame{position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;border:1px solid #28454e;border-radius:12px;background:#061219;box-shadow:0 8px 24px #0003}.video-frame video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}.watch-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:14px}.watch-link{display:inline-block;font-size:13px;text-underline-offset:3px}
   </style>
 </head>
 <body>
@@ -16,6 +17,13 @@
   <div class="brand"><img src="/assets/branding/islandworld-icon.svg" alt="A lighthouse on a high island above the night sea"><div><div class="eyebrow">GREYWAKE ISLAND</div><h1>ISLAND WORLD</h1><div>One island. Never the same sky.</div></div></div>
   <p>The same explorable world, now in an Android app. Walk the cliffs, drive the island roads, watch the weather change, and join friends in private rooms.</p>
   <div class="actions"><a id="apk-download" class="button primary" href="https://drive.google.com/uc?export=download&amp;id=1VuPLPpWTVHk8602MdHD44gRLXscV5aG5" rel="noopener">Download Android APK ↓</a><a class="button" href="/">Play in your browser →</a></div>
+  <section class="watch" aria-labelledby="watch-title">
+    <h2 id="watch-title">Watch IslandWorld</h2>
+    <h3>30-second teaser</h3>
+    <p class="small">30 seconds · island weather, scenery and exploration</p>
+    <div class="video-frame"><video id="islandworld-teaser" controls playsinline preload="none" poster="/assets/promotional/islandworld-teaser-poster.webp" aria-label="IslandWorld 30-second gameplay teaser"><source src="/assets/promotional/islandworld-teaser-web.mp4" type="video/mp4"><a href="/assets/promotional/islandworld-teaser-web.mp4">Open the teaser video</a></video></div>
+    <div class="watch-actions"><a class="button" href="https://drive.google.com/file/d/1jVo2P86GkcY4Nn7Q2kTj7T1mOg4QATx8/view" target="_blank" rel="noopener">Watch the full showcase · 11 minutes ↗</a><a class="watch-link" href="https://drive.google.com/file/d/1aJ6y5GvacnF0NbwXFIGipPF9zg3XQkrI/view" target="_blank" rel="noopener">Teaser in full HD ↗</a></div>
+  </section>
   <div class="details"><p><strong>Version:</strong> 1.0.0-beta.1 · <strong>Size:</strong> 146.4 MB</p><p><strong>Requires:</strong> Android 10 or later, WebGL 2, and a recent Android System WebView.</p><p>The world assets are included in the app. Multiplayer and room voice require internet access. Microphone access is optional and requested only when you enable voice.</p></div>
   <h2>Install on your phone</h2>
   <ol><li>Download the APK from Google Drive. For a large file, Drive may ask you to confirm the download.</li><li>Open the downloaded file and allow installation from that browser when Android asks.</li><li>Install IslandWorld and play in landscape. Use the left stick to move, drag on the right to look, and tap SPRINT to run.</li></ol>
@@ -23,5 +31,6 @@
   <div class="checksum small">APK SHA-256<br><code>c47fa979e0626e5a0828a090b9224f137c86ce566295a21449033b5bd866bdda</code></div>
   <footer class="small">The browser version remains available. <a href="/THIRD_PARTY_LICENSES.md">Asset and software licenses</a></footer>
 </main>
+<script>document.getElementById('islandworld-teaser').volume = 0.4;</script>
 </body>
 </html>
