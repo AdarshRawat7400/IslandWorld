@@ -23,7 +23,21 @@ The browser client uses `VITE_ISLAND_SERVER_URL` at build time. For example, set
 
 ## Deploy the room server on Render Free
 
-The deployed service is `islandworld-room-server` on Render's **Free** plan at `https://islandworld-room-server.onrender.com`. It is connected to the private IslandWorld GitHub repository, runs `npm ci` and `npm run server`, and checks `/healthz`. The server binds to `0.0.0.0` and uses Render's `PORT`; both Firebase Hosting origins are allowed. [`render.yaml`](render.yaml) records an equivalent Free Blueprint for rebuilding this service in a fresh workspace. Do not create a second service for the existing deployment.
+The deployed service is `islandworld-room-server` on Render's **Free** plan at `https://islandworld-room-server.onrender.com`. It is connected to the private IslandWorld GitHub repository, runs `npm ci` and `npm run server`, and checks `/healthz`. The server binds to `0.0.0.0` and uses Render's `PORT`. [`render.yaml`](render.yaml) records an equivalent Free Blueprint for rebuilding this service in a fresh workspace. Do not create a second service for the existing deployment.
+
+### Android and browser rooms
+
+The Android APK bundles the same production client as Firebase. Capacitor serves those bundled files at the secure local origin `https://localhost`; the game still connects to the public Render HTTPS/WSS room server from `.env.production`. Android and browser players can therefore join the same room, and voice uses the existing LiveKit service. Online rooms and voice require internet access; offline single-player remains separate.
+
+Set the existing Render service's `ISLAND_ALLOWED_ORIGINS` to exactly:
+
+```text
+https://islandworld-3ccb4.web.app,https://islandworld-3ccb4.firebaseapp.com,https://localhost
+```
+
+Apply this environment setting and redeploy the existing service. Editing the Blueprint does not automatically change an existing manually configured service. Both Socket.IO polling and WebSocket upgrades enforce the exact allowlist; do not replace it with a wildcard. The app's local origin does not grant different combat permissions: server-owned ammunition, fire rate, health, damage, spawn protection, room membership, and reconnect tokens remain authoritative. No LiveKit secret is packaged in the APK or Firebase files.
+
+[`tests/serverNativeOrigins.test.js`](tests/serverNativeOrigins.test.js) verifies allowed/rejected origins on both transports, independent native-origin and Firebase-origin room identities, authoritative PvP damage, Explore protection, reconnect, and room-scoped voice authorization. These automated clients exercise the socket protocol; physical Android microphone and network handoff checks require a phone.
 
 Check the [live health endpoint](https://islandworld-room-server.onrender.com/healthz). The source-controlled `.env.production` contains the public Render HTTPS origin. Vite captures it **during the production build**, so rebuild before deploying Firebase's `dist/` folder. In PowerShell:
 
@@ -44,7 +58,7 @@ New players arrive in a small set of verified safe clearings at South Landing so
 
 ## Loot, inventory, and explosives
 
-New arrivals carry a revolver and rifle. The third gun, the shotgun, can be collected from room pickups. Each player can carry at most three distinct guns, three grenades, and three mines. Press H or select the sixth **HOLSTER** wheel slot to roam unarmed; this is local equipment presentation and does not discard the carried guns. Press H again to draw the last gun, or select a gun through its shortcut or the wheel. Tap Q or Tab to advance to the next available equipment slot; hold either key to choose from the wheel. Gun selection is stored in the inventory, while `combat:fire` accepts any **owned** gun to avoid a selection packet race. C toggles crouch and Z toggles prone; pressing the active stance key again returns to standing. The client sends stance with each movement pose, and the server checks eye height, maximum speed, and player hitboxes for that stance. A respawn begins with a revolver only. Death drops every other carried gun plus all grenades and mines into loot that other players can collect. Loot stacks can be collected partially when the player has fewer open slots than the stack contains.
+New arrivals carry a revolver and rifle. The third gun, the shotgun, can be collected from room pickups. Each player can carry at most three distinct guns, three grenades, and three mines. Press H or select the sixth **HOLSTER** wheel slot to roam unarmed; this is local equipment presentation and does not discard the carried guns. Press H again to draw the last gun, or select a gun through its shortcut or the wheel. Tap Q or Tab to advance to the next available equipment slot; hold either key to choose from the wheel. Gun selection is stored in the inventory, and `combat:fire` requires the currently selected **owned** gun. Switching weapons does not reset the server firing cooldown. C toggles crouch and Z toggles prone; pressing the active stance key again returns to standing. The client sends stance with each movement pose, and the server checks eye height, maximum speed, and player hitboxes for that stance. A respawn begins with a revolver only. Death drops every other carried gun plus all grenades and mines into loot that other players can collect. Loot stacks can be collected partially when the player has fewer open slots than the stack contains.
 
 Each room scatters a seeded set of gun, grenade, mine, medkit, ammo, and armor pickups among validated clearings. A collected world pickup returns after 90 seconds. Death loot expires after three minutes. Both are bounded by the room's pickup limit. Inventory and pickup state survive a reconnect while the room remains in memory.
 

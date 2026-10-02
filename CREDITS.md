@@ -113,6 +113,8 @@ Gunshot recordings are excerpts from **The Free Firearm Sound Library** by Ben J
 | [Three.js](https://threejs.org/) | 3D rendering and GLB loading | MIT |
 | [Socket.IO](https://socket.io/) | Private room server and browser transport | MIT |
 | [Vite](https://vite.dev/) | Development server and static build | MIT |
+| [Capacitor](https://capacitorjs.com/) core and Android runtime | Bundled Android WebView host | MIT, Drifty Co. |
+| [Capacitor App](https://github.com/ionic-team/capacitor-plugins/tree/main/app) | Android Back and app lifecycle events | MIT, Ionic |
 | [DM Sans](https://fontsource.org/fonts/dm-sans) via Fontsource | Interface text | SIL OFL 1.1 |
 | [Libre Baskerville](https://fontsource.org/fonts/libre-baskerville) via Fontsource | Display text | SIL OFL 1.1 |
 
@@ -133,3 +135,13 @@ warm, distance-attenuated spotlights under its credited MIT license above.
 ## Hit vocals
 
 Six human pain grunts from [Hurt Sound Effects by EZduzziteh](https://opengameart.org/content/hurt-sound-effects), and a startled sheep vocal from [Sheep Baa by mikewest / AntumDeluge](https://opengameart.org/content/sheep-baa), are redistributed under CC0 1.0. Sources, file hashes and the complete license are in [`public/assets/hit-audio/SOURCES.md`](public/assets/hit-audio/SOURCES.md). Bird/rabbit hit calls and missing-recording fallbacks are original short synthesized vocals. No film or celebrity audio is used.
+
+## Android app
+
+The Android host uses Capacitor core/Android 8.5.2 and Capacitor App 8.1.1. The
+Capacitor CLI 8.4.3 is a development tool. Their MIT copyright and permission
+notices are copied from the installed package licenses into
+[`public/THIRD_PARTY_LICENSES.md`](public/THIRD_PARTY_LICENSES.md), which is bundled
+in the APK. The lighthouse/island launcher artwork is original project vector
+art. The native permission restriction, fullscreen/cutout configuration, optional
+JavaScript lifecycle integration, and build/signing scripts are project code.

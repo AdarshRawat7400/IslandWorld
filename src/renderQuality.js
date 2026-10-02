@@ -43,8 +43,11 @@ export function detectRenderEnvironment(view = typeof window === 'undefined' ? n
   };
 }
 
-export function selectRenderProfile({ mobile = false, deviceMemory = null,
+export function selectRenderProfile({ mobile = false, nativeAndroid = false, deviceMemory = null,
   hardwareConcurrency = null } = {}) {
+  // Android RAM/core hints do not measure GPU capacity. Start the bundled APK
+  // conservatively; retain the existing browser envelopes and authored world.
+  if (nativeAndroid) return PROFILES.mobileConstrained;
   if (!mobile) return PROFILES.desktop;
   const memory = positiveHint(deviceMemory);
   const cores = positiveHint(hardwareConcurrency);

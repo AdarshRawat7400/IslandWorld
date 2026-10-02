@@ -1,0 +1,11 @@
+{
+  "packageId": "com.islandworld.game",
+  "versionName": "1.0.0-beta.1",
+  "versionCode": 1,
+  "minimumAndroidSdk": 29,
+  "apkSizeBytes": 146379246,
+  "apkSha256": "c47fa979e0626e5a0828a090b9224f137c86ce566295a21449033b5bd866bdda",
+  "downloadUrl": "https://drive.google.com/uc?export=download&id=1VuPLPpWTVHk8602MdHD44gRLXscV5aG5",
+  "filePageUrl": "https://drive.google.com/file/d/1VuPLPpWTVHk8602MdHD44gRLXscV5aG5/view",
+  "validatedOn": "2026-10-02"
+}

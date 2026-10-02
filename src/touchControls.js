@@ -1,3 +1,5 @@
+import { bindPointerAction } from './pointerAction.js';
+
 const STICK_RADIUS = 44;
 const STICK_DEAD_ZONE = 7;
 
@@ -85,6 +87,7 @@ export function createTouchInput() {
 
 export function createTouchControls(root, { onLook, onAction }) {
   const input = createTouchInput();
+  const actionDisposers = [];
   const stick = root.querySelector('#touch-stick');
   const thumb = root.querySelector('#touch-stick-thumb');
   const look = root.querySelector('#touch-look');
@@ -158,12 +161,13 @@ export function createTouchControls(root, { onLook, onAction }) {
     for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) button.addEventListener(type, release);
   }
   for (const button of root.querySelectorAll('[data-touch-action]')) {
-    button.addEventListener('click', () => {
+    actionDisposers.push(bindPointerAction(button, () => {
       setToolsOpen(false);
       onAction(button.dataset.touchAction);
-    });
+    }));
   }
-  moreButton?.addEventListener('click', () => setToolsOpen(tools.hidden));
+  if (moreButton) actionDisposers.push(bindPointerAction(moreButton,
+    () => setToolsOpen(tools.hidden)));
   return {
     input,
     setSprint(active) { paintSprint(input.setSprint(active)); },
@@ -200,6 +204,10 @@ export function createTouchControls(root, { onLook, onAction }) {
       for (const button of root.querySelectorAll('[data-touch-hold]')) button.classList.remove('pressed');
       paintSprint(false);
       setToolsOpen(false);
+    },
+    dispose() {
+      this.reset();
+      for (const unbind of actionDisposers.splice(0)) unbind();
     },
   };
 }

@@ -6,9 +6,20 @@ An explorable coastal island built with Three.js and Blender assets. This projec
 
 The source project remains in its own folder. This folder can be developed and built independently.
 
+## Android app
+
+[Download IslandWorld for Android](https://islandworld-3ccb4.web.app/android.html).
+The signed APK bundles the same world and touch controls while preserving desktop
+and mobile browser play. Android 10+, current Android System WebView, and WebGL2
+are required. Solo exploration uses bundled assets offline; rooms and voice use
+the existing online services. Android Back and background/resume handling are
+integrated with the game menu. The APK is distributed through Google Drive;
+Firebase Spark remains unchanged. See [ANDROID.md](ANDROID.md) for installation,
+builds, signing, updates, permissions, and device verification.
+
 ## Run locally
 
-Requires Node.js 20.19+ or 22.12+ and npm.
+Requires Node.js 22.12 or newer and npm for the complete browser/Android toolchain.
 
 ```powershell
 npm ci

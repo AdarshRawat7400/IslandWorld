@@ -8,4 +8,4 @@ services:
     healthCheckPath: /healthz
     envVars:
       - key: ISLAND_ALLOWED_ORIGINS
-        value: https://islandworld-3ccb4.web.app,https://islandworld-3ccb4.firebaseapp.com
+        value: https://islandworld-3ccb4.web.app,https://islandworld-3ccb4.firebaseapp.com,https://localhost

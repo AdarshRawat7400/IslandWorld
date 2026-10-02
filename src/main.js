@@ -34,6 +34,8 @@ import { createTouchControls } from './touchControls.js';
 import { orientFirstPersonCamera } from './firstPersonCamera.js';
 import { createLighthouseGlare } from './lighthouseGlare.js';
 import { useTouchControls } from './inputMode.js';
+import { isNativeAndroid, createNativeLifecycleController,
+  bindNativeAppLifecycle } from './nativeAppLifecycle.js';
 import { createVoiceChat } from './voiceChat.js';
 import { createVoiceChatUI } from './voiceChatUi.js';
 import './voiceChatUi.css';
@@ -71,6 +73,8 @@ const captureEnabled = ['1', 'orbit', 'showcase'].includes(captureRequest);
 if (captureEnabled) document.body.classList.add('cinematic-capture');
 const siteById = Object.fromEntries(SITES.map((site) => [site.id, site]));
 const keys = new Set();
+const nativeAndroid = isNativeAndroid();
+document.body.classList.toggle('native-android', nativeAndroid);
 const settingsKey = 'island-world-settings-v1';
 let settings = {};
 try { settings = JSON.parse(localStorage.getItem(settingsKey) || '{}') || {}; } catch { /* storage may be disabled */ }
@@ -102,7 +106,7 @@ const hitAudio = createHitAudio({ camera });
 camera.rotation.order = 'YXZ';
 scene.add(camera);
 const cinematicCapture = captureEnabled ? createCinematicCapture(camera) : null;
-const ordinaryRenderProfile = selectRenderProfile(detectRenderEnvironment());
+const ordinaryRenderProfile = selectRenderProfile({ ...detectRenderEnvironment(), nativeAndroid });
 const combatDiagnosticProfile = import.meta.env.DEV
   && ['combat', 'night_lamps'].includes(new URLSearchParams(location.search).get('test'))
   && new URLSearchParams(location.search).get('qaQuality') === 'low';
@@ -244,6 +248,10 @@ let started = false;
 let menuOpen = true;
 let mapOpen = false;
 let muted = false;
+let nativeLifecycle = null;
+let nativeAudioPaused = false;
+let nativeVoiceWasDeafened = false;
+let graphicsLost = false;
 let flashlightOn = false;
 let elapsed = 0;
 let ambientElapsed = 0;
@@ -479,6 +487,7 @@ function openMenu() {
   touchControls.setVisible(false);
 }
 function closeMenu() {
+  if (graphicsLost || (nativeLifecycle && !nativeLifecycle.resumeFromGesture())) return;
   combat.unlockAudio();
   void hitAudio.unlock();
   if (!started) {
@@ -548,10 +557,7 @@ function toggleDrone() {
 }
 function toggleAudio() {
   muted = !muted;
-  sound.setMuted(muted);
-  music.setMuted(muted);
-  combat.setMuted(muted);
-  hitAudio.setMuted(muted);
+  applyGameAudioMute();
   showToast(muted ? 'AUDIO OFF' : 'AUDIO ON');
 }
 function nearbyInteraction() {
@@ -706,7 +712,7 @@ function onLook(dx, dy) {
 // Exercise the real touch HUD with a desktop browser's phone-size viewport.
 const touchQaEnabled = import.meta.env.DEV
   && new URLSearchParams(location.search).get('touch') === '1';
-const touchEnabled = touchQaEnabled || useTouchControls({
+const touchEnabled = nativeAndroid || touchQaEnabled || useTouchControls({
   primaryCoarse: window.matchMedia('(pointer: coarse)').matches,
   anyFine: window.matchMedia('(any-pointer: fine)').matches,
 });
@@ -1889,6 +1895,7 @@ window.addEventListener('pointercancel', (event) => {
   if (event.pointerType === 'mouse') combatMouse.reset();
 });
 document.addEventListener('visibilitychange', () => {
+  nativeLifecycle?.setAppActive(!document.hidden);
   if (!document.hidden) return;
   releaseCombatInput();
   keys.clear();
@@ -1913,6 +1920,113 @@ window.addEventListener('resize', () => {
   refreshTouchUi();
 });
 
+function applyGameAudioMute() {
+  const silent = muted || nativeAudioPaused || graphicsLost;
+  sound.setMuted(silent);
+  music.setMuted(silent);
+  combat.setMuted(silent);
+  hitAudio.setMuted(silent);
+}
+
+function releaseAllGameInput() {
+  releaseCombatInput();
+  keys.clear();
+  touchControls.reset();
+  mouseDragging = false;
+  fallbackPointerStart = null;
+  combat.setAim(false);
+  combat.closeEquipmentWheel({ commit: false });
+  combat.setState({ active: false });
+  lastCombatVisible = false;
+  document.exitPointerLock?.();
+}
+
+if (nativeAndroid) {
+  nativeLifecycle = createNativeLifecycleController({
+    getUiState: () => ({ started, menuOpen, mapOpen, wheelOpen: combat.equipmentWheelOpen }),
+    onPause() {
+      releaseAllGameInput();
+      openMenu();
+      if (mapOpen) closeMap();
+      touchControls.setVisible(false);
+      voiceChatUI.setGameplayActive(false);
+      if (!nativeAudioPaused) nativeVoiceWasDeafened = voiceChat.getState().deafened;
+      nativeAudioPaused = true;
+      applyGameAudioMute();
+      voiceChat.setPushToTalk(false);
+      void voiceChat.setMuted(true);
+      voiceChat.setDeafened(true);
+      document.body.dataset.nativeAppState = 'background';
+    },
+    onForeground() {
+      // Multiplayer may reconnect in the background. The Resume gesture still
+      // controls local input/audio, and never turns the microphone back on.
+      document.body.dataset.nativeAppState = 'paused';
+      refreshTouchUi();
+    },
+    onResume() {
+      nativeAudioPaused = false;
+      applyGameAudioMute();
+      voiceChat.setDeafened(nativeVoiceWasDeafened);
+      void voiceChat.unlockAudio();
+      if (started) { void sound.start(); void music.start(); }
+      document.body.dataset.nativeAppState = 'active';
+    },
+    onBack(action) {
+      document.body.dataset.nativeBackAction = action;
+      if (action === 'wheel') combat.closeEquipmentWheel({ commit: false });
+      else if (action === 'map') closeMap();
+      else if (action === 'resume') closeMenu();
+      else if (action === 'menu') openMenu();
+    },
+  });
+  document.body.dataset.nativeAppState = 'active';
+  document.body.dataset.nativeHost = 'connecting';
+  void bindNativeAppLifecycle({ controller: nativeLifecycle }).then(() => {
+    document.body.dataset.nativeHost = 'ready';
+  }).catch((error) => {
+    document.body.dataset.nativeHost = 'unavailable';
+    document.body.dataset.nativeHostError = String(error?.message || 'Android host unavailable')
+      .replace(/[\r\n]/g, ' ').slice(0, 240);
+    console.warn('Android host controls could not be initialized:', error.message);
+  });
+}
+
+// Android can reclaim the GPU when switching apps. Three restores its WebGL
+// resources; keep controls paused until the player resumes, with a reload path
+// if a driver cannot restore the context.
+let graphicsRecovery = null;
+renderer.domElement.addEventListener('webglcontextlost', (event) => {
+  event.preventDefault();
+  graphicsLost = true;
+  applyGameAudioMute();
+  voiceChat.setPushToTalk(false);
+  void voiceChat.setMuted(true);
+  releaseAllGameInput();
+  openMenu();
+  if (mapOpen) closeMap();
+  if (!graphicsRecovery) {
+    graphicsRecovery = document.createElement('section');
+    graphicsRecovery.className = 'graphics-recovery';
+    graphicsRecovery.setAttribute('role', 'alert');
+    const message = document.createElement('p');
+    message.textContent = 'Graphics were interrupted. Waiting for the display to recover…';
+    const reload = document.createElement('button');
+    reload.type = 'button';
+    reload.textContent = 'RELOAD ISLAND';
+    reload.addEventListener('click', () => location.reload());
+    graphicsRecovery.append(message, reload);
+    document.body.append(graphicsRecovery);
+  }
+  graphicsRecovery.hidden = false;
+});
+renderer.domElement.addEventListener('webglcontextrestored', () => {
+  graphicsLost = false;
+  applyGameAudioMute();
+  if (graphicsRecovery) graphicsRecovery.hidden = true;
+  showToast('DISPLAY RESTORED · RESUME WHEN READY');
+});
+
 let showcaseRecording = null;
 let lastFrame = performance.now();
 let capturePerfSince = lastFrame;
@@ -1925,6 +2039,7 @@ function frame(now) {
   const frameWorkStart = captureEnabled ? performance.now() : 0;
   const wallDt = Math.max((now - lastFrame) / 1000, 0);
   lastFrame = now;
+  if (graphicsLost || (firstFrameRendered && nativeLifecycle?.getState().paused)) return;
   if (showcaseRecording?.offlineBusy) return;
   const dt = showcaseRecording?.offlineActive ? 1 / 30 : Math.min(wallDt, 0.05);
   cinematicCapture?.update(assetsReady && firstFrameRendered ? wallDt : 0);

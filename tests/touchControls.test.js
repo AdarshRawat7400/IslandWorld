@@ -218,6 +218,43 @@ test('sprint toggles without taking movement or look away from the two thumbs', 
   assert.equal(hud.sprint.attributes.get('aria-pressed'), 'false');
 });
 
+test('additional fingers use sprint and tools without clicks or interrupting walking and looking', () => {
+  const actions = [], lookDeltas = [];
+  let hud;
+  hud = touchHudFixture({
+    onLook: (dx, dy) => lookDeltas.push([dx, dy]),
+    onAction(action) {
+      actions.push(action);
+      if (action === 'sprint') hud.controls.toggleSprint();
+    },
+  });
+  hud.controls.setVisible(true);
+  hud.controls.setMode('walking');
+  hud.stick.dispatch('pointerdown', { pointerId: 1, pointerType: 'touch', clientY: 40 });
+  hud.look.dispatch('pointerdown', { pointerId: 2, pointerType: 'touch', clientX: 500, clientY: 200 });
+  const third = { pointerId: 3, pointerType: 'touch', isPrimary: false };
+  hud.sprint.dispatch('pointerdown', third);
+  hud.sprint.dispatch('pointerup', third);
+  hud.sprint.dispatch('click', { ...third, detail: 1 });
+  assert.equal(hud.controls.input.snapshot().sprint, true, 'emulated click must not undo sprint');
+  hud.more.dispatch('pointerdown', third);
+  hud.more.dispatch('pointerup', third);
+  hud.more.dispatch('click', { ...third, detail: 1 });
+  assert.equal(hud.tools.hidden, false, 'MORE opens using a secondary finger without a click');
+  hud.map.dispatch('pointerdown', { ...third, pointerId: 4 });
+  hud.map.dispatch('pointercancel', { ...third, pointerId: 4 });
+  hud.map.dispatch('click', { ...third, pointerId: 4, detail: 1 });
+  assert.deepEqual(actions, ['sprint', 'map']);
+  assert.equal(hud.tools.hidden, true);
+  hud.stick.dispatch('pointercancel', { pointerId: 4 });
+  hud.look.dispatch('lostpointercapture', { pointerId: 4 });
+  hud.look.dispatch('pointermove', { pointerId: 2, clientX: 517, clientY: 209 });
+  assert.deepEqual(lookDeltas, [[17, 9]], 'the original look finger is still active');
+  assert.ok(hud.controls.input.snapshot().forward > 0.9, 'the walking finger is still held');
+  assert.equal(hud.controls.input.snapshot().sprint, true);
+  hud.controls.dispose();
+});
+
 test('hiding controls and changing movement mode clear sprint, pointers and pedals', () => {
   const hud = touchHudFixture();
   hud.controls.setVisible(true);

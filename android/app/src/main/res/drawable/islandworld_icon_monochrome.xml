@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Original IslandWorld lighthouse, high cliffs and night sea artwork. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFF" android:pathData="M25,62 L31,53 L42,46 L51,49 L63,53 L73,55 L82,62 L77,72 L68,77 L43,77 L29,69 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M51,54 L54,38 L62,38 L65,55 Z M50,36 L66,36 L66,39 L50,39 Z M52,31 L58,27 L64,31 L64,35 L52,35 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M66,32 L80,30 L80,39 L66,36 Z M49,33 L27,37 L27,41 L49,36 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M77,28 C72,28 68,31 68,36 C68,41 72,44 77,43 C73,42 72,39 72,36 C72,32 74,30 77,28 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M36,81 Q43,78 50,81 Q59,84 70,80 L70,82 Q59,86 50,83 Q43,80 36,83 Z" />
+</vector>

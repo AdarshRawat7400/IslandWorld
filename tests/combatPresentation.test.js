@@ -142,6 +142,11 @@ class FakeElement {
     if (!this.events.has(name)) this.events.set(name, []);
     this.events.get(name).push(callback);
   }
+  removeEventListener(name, callback) {
+    const callbacks = this.events.get(name);
+    const index = callbacks?.indexOf(callback) ?? -1;
+    if (index >= 0) callbacks.splice(index, 1);
+  }
   dispatch(name, event = {}) {
     for (const callback of this.events.get(name) ?? []) {
       callback({ preventDefault() {}, pointerId: 1, ...event });
@@ -516,6 +521,52 @@ test('only the firing touch releases a held automatic trigger while aim uses ano
   fire.dispatch('pointerup', { pointerId: 9 });
   assert.deepEqual(triggers, [true, false, true, false]);
   combat.dispose();
+});
+
+test('secondary touches aim, reload and select equipment without a compatibility click', () => {
+  const aims = [], triggers = [], selections = [];
+  let shots = 0, reloads = 0;
+  const { combat, root } = makeCombatFixture({ mobile: true,
+    onAim: (value) => aims.push(value),
+    onTriggerChange: (value) => triggers.push(value),
+    onFire() { shots += 1; }, onReload() { reloads += 1; },
+    onSelectEquipment: (id) => selections.push(id),
+  });
+  const button = (label) => root.find((element) => element.attributes.get('aria-label') === label);
+  const aim = button('Toggle aim'), fire = button('Fire weapon');
+  const reload = button('Reload weapon'), wheel = button('Open equipment wheel');
+  const third = { pointerId: 3, pointerType: 'touch', isPrimary: false };
+  aim.dispatch('pointerdown', third);
+  aim.dispatch('pointerup', third);
+  aim.dispatch('click', { ...third, detail: 1 });
+  assert.equal(combat.aiming, true);
+  assert.deepEqual(aims, [true]);
+  fire.dispatch('pointerdown', { ...third, pointerId: 4 });
+  fire.dispatch('pointercancel', { ...third, pointerId: 3 });
+  aim.dispatch('lostpointercapture', third);
+  assert.equal(shots, 1);
+  assert.deepEqual(triggers, [true], 'releasing the aiming finger cannot release FIRE');
+  combat.setState({ ammo: { magazine: 5, reserve: 18 } });
+  reload.dispatch('pointerdown', { ...third, pointerId: 5 });
+  reload.dispatch('pointerup', { ...third, pointerId: 5 });
+  reload.dispatch('click', { ...third, pointerId: 5, detail: 1 });
+  assert.equal(reloads, 1);
+  assert.deepEqual(triggers, [true, false], 'reload deliberately interrupts the trigger');
+  assert.equal(combat.aiming, true, 'reload must preserve latched aim');
+  wheel.dispatch('pointerdown', third);
+  wheel.dispatch('pointerup', third);
+  wheel.dispatch('click', { ...third, detail: 1 });
+  assert.equal(combat.equipmentWheelOpen, true, 'duplicate click must not close the wheel');
+  const rifle = button('Select rifle, slot 2');
+  assert.ok(rifle);
+  rifle.dispatch('pointerdown', { ...third, pointerId: 6 });
+  rifle.dispatch('pointerup', { ...third, pointerId: 6 });
+  rifle.dispatch('click', { ...third, pointerId: 6, detail: 1 });
+  assert.equal(combat.equipmentWheelOpen, false);
+  assert.deepEqual(selections, ['rifle']);
+  combat.dispose();
+  assert.equal(aim.events.get('pointerdown').length, 0);
+  assert.equal(reload.events.get('click').length, 0);
 });
 
 test('mobile aim resets on weapon changes, holster, wheel, menus, death, and removal', () => {

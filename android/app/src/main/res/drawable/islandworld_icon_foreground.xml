@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Original IslandWorld lighthouse, high cliffs and night sea artwork. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#214852" android:fillAlpha="0.4" android:pathData="M24,42 Q36,27 56,27 Q72,27 83,43 Q68,34 54,35 Q38,35 24,42 Z" />
+    <path android:fillColor="#E8D9AF" android:pathData="M77,28 C72,28 68,31 68,36 C68,41 72,44 77,43 C73,42 72,39 72,36 C72,32 74,30 77,28 Z" />
+    <path android:fillColor="#E5C385" android:fillAlpha="0.12" android:pathData="M61,34 L81,31 L81,41 L61,36 Z" />
+    <path android:fillColor="#F4DCA4" android:fillAlpha="0.19" android:pathData="M61,34 L79,33 L79,38 L61,36 Z" />
+    <path android:fillColor="#DCC695" android:fillAlpha="0.12" android:pathData="M54,34 L26,39 L26,44 L54,36 Z" />
+    <path android:fillColor="#24414A" android:pathData="M25,62 L31,53 L42,46 L51,49 L63,53 L73,55 L82,62 L77,72 L68,77 L43,77 L29,69 Z" />
+    <path android:fillColor="#3E6154" android:pathData="M25,62 L31,53 L42,46 L51,49 L63,53 L73,55 L82,62 L69,60 L56,58 L45,59 L35,57 Z" />
+    <path android:fillColor="#75907A" android:pathData="M31,53 L42,46 L51,49 L45,49 L40,48 L33,54 L35,57 L31,59 L25,62 Z" />
+    <path android:fillColor="#13313D" android:pathData="M25,62 L35,57 L37,65 L33,71 L29,69 Z M46,59 L49,66 L44,77 L39,74 Z M63,60 L62,70 L67,77 L58,77 L57,66 Z M73,62 L82,62 L77,72 L73,74 L75,66 Z" />
+    <path android:fillColor="#41616A" android:fillAlpha="0.68" android:pathData="M31,61 L34,60 L32,68 Z M40,60 L42,61 L41,72 Z M51,61 L54,61 L53,71 Z M69,62 L71,62 L69,72 Z" />
+    <path android:fillColor="#AFB8A1" android:pathData="M51,54 L54,38 L62,38 L65,55 Z" />
+    <path android:fillColor="#E8E3CB" android:pathData="M51,54 L54,38 L58,38 L59,54 Z" />
+    <path android:fillColor="#527079" android:pathData="M60,39 L62,38 L65,55 L62,54 Z" />
+    <path android:fillColor="#263D43" android:pathData="M52,47 L64,47 L64,49 L52,49 Z" />
+    <path android:fillColor="#142C36" android:pathData="M56,53 L56,49 Q58,47 60,49 L60,54 Z" />
+    <path android:fillColor="#0A202A" android:pathData="M52,36 L64,36 L66,39 L50,39 Z M52,31 L58,27 L64,31 L64,33 L52,33 Z" />
+    <path android:fillColor="#5A7377" android:pathData="M53,31 L58,27 L62,31 Z" />
+    <path android:fillColor="#F3CC84" android:pathData="M53,32 L63,32 L63,36 L53,36 Z" />
+    <path android:fillColor="#FFF3C7" android:pathData="M55,32 L60,32 L60,36 L55,36 Z" />
+    <path android:fillColor="#263C41" android:pathData="M53,32 L54,32 L54,36 L53,36 Z M58,32 L59,32 L59,36 L58,36 Z M62,32 L63,32 L63,36 L62,36 Z" />
+    <path android:fillColor="#3D6B79" android:pathData="M28,73 Q36,70 43,74 Q51,77 59,74 Q68,70 78,73 L77,76 Q68,74 60,77 Q50,80 42,77 Q34,73 28,76 Z" />
+    <path android:fillColor="#91BDBB" android:fillAlpha="0.85" android:pathData="M31,73 Q36,72 42,74 Q50,77 59,74 Q68,71 76,73 L76,74 Q68,73 60,76 Q51,79 42,76 Q36,74 31,74 Z" />
+    <path android:fillColor="#305965" android:pathData="M35,80 Q42,77 50,80 Q60,83 71,79 L71,81 Q60,85 50,82 Q41,79 35,82 Z" />
+    <path android:fillColor="#78A4A9" android:fillAlpha="0.65" android:pathData="M41,80 Q45,79 50,81 Q57,83 64,81 L64,82 Q56,85 50,82 Q45,81 41,81 Z" />
+</vector>

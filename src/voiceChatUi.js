@@ -1,3 +1,5 @@
+import { bindPointerAction } from './pointerAction.js';
+
 const clampVolume = (value) => Math.max(0, Math.min(1, Number(value) || 0));
 const isTyping = (element) => Boolean(element?.isContentEditable
   || ['INPUT', 'TEXTAREA', 'SELECT'].includes(element?.tagName));
@@ -237,11 +239,11 @@ export function createVoiceChatUI({ voice, client, mobile = false,
   listen(modeSelect, 'change', () => { releasePtt(); setMode(modeSelect.value); });
   listen(volumeInput, 'input', () => voice.setVolume(clampVolume(Number(volumeInput.value) / 100)));
   listen(resumeButton, 'click', () => run(() => voice.unlockAudio()));
-  if (mobileButton) listen(mobileButton, 'click', () => run(async () => {
+  if (mobileButton) listeners.push(bindPointerAction(mobileButton, () => run(async () => {
     const state = voice.getState();
     if (!state.joined) { await voice.join(); return; }
     await voice.setMuted(!state.muted);
-  }));
+  }), { releaseTarget: win }));
   listen(win, 'keydown', (event) => {
     const state = voice.getState();
     if (mobile || event.code !== 'KeyV' || event.repeat || !gameplayActive

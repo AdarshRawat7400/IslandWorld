@@ -109,6 +109,28 @@ function fixture({ mobile = false, inRoom = true, configured = true, supported =
 }
 const settled = () => new Promise((resolve) => setImmediate(resolve));
 
+test('mobile voice responds to a secondary finger once and keeps the initial microphone off', async () => {
+  const f = fixture({ mobile: true });
+  const third = { pointerId: 3, pointerType: 'touch', isPrimary: false };
+  f.ui.mobileButton.dispatch('pointerdown', third);
+  f.ui.mobileButton.dispatch('pointerup', third);
+  await settled();
+  f.ui.mobileButton.dispatch('click', { ...third, detail: 1 });
+  await settled();
+  assert.equal(f.calls.filter(([action]) => action === 'join').length, 1);
+  assert.equal(f.calls.filter(([action]) => action === 'muted').length, 0);
+  assert.equal(f.ui.mobileButton.textContent, 'MIC OFF');
+  f.ui.mobileButton.dispatch('pointerdown', { ...third, pointerId: 4 });
+  f.win.dispatch('pointerup', { pointerId: 4 });
+  await settled();
+  f.ui.mobileButton.dispatch('click', { ...third, pointerId: 4, detail: 1 });
+  await settled();
+  assert.deepEqual(f.calls.filter(([action]) => action === 'muted'), [['muted', false]]);
+  f.ui.dispose();
+  assert.equal(f.ui.mobileButton.listenerCount(), 0);
+  assert.equal(f.win.listenerCount(), 0);
+});
+
 test('voice UI never requests a microphone automatically and joins listen-only before explicit enable', async () => {
   const f = fixture();
   assert.deepEqual(f.calls, [['mode', 'push-to-talk']]);

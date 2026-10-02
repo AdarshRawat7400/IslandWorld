@@ -97,3 +97,26 @@ body.touch-ui #stamina-hud { top: calc(150px + env(safe-area-inset-top, 0px)); l
 #combat-qa button { margin: 2px; padding: 5px; font: inherit; }
 #combat-qa output { display: block; overflow-wrap: anywhere; }
 body.touch-ui #toast { max-width: 55vw; padding: 6px 9px; font-size: 10px; }
+body.native-android .screen, body.native-android .panel {
+  padding: max(14px, env(safe-area-inset-top, 0px))
+    max(14px, env(safe-area-inset-right, 0px))
+    max(14px, env(safe-area-inset-bottom, 0px))
+    max(14px, env(safe-area-inset-left, 0px));
+}
+body.native-android .screen-card, body.native-android .panel-card {
+  max-height: calc(100dvh - 28px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  overscroll-behavior: contain;
+}
+.graphics-recovery {
+  position: fixed; inset: 0; z-index: 50; display: flex;
+  flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; padding: 24px; background: #08141aee; text-align: center;
+}
+.graphics-recovery p { max-width: 40ch; line-height: 1.6; }
+.graphics-recovery button {
+  min-height: 44px; padding: 12px 20px; border: 1px solid #dfc998;
+  color: #17232a; background: #dec794; letter-spacing: .1em;
+}
+.android-download-link { display: inline-block; margin: 14px 0 2px; color: #dfc998; font-size: 12px; letter-spacing: .08em; text-decoration: none; }
+.android-download-link:hover { text-decoration: underline; }
+.native-android .android-download-link { display: none; }

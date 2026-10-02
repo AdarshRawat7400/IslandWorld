@@ -4,6 +4,7 @@ import { MAX_HEALTH, WEAPONS } from './multiplayerRules.js';
 import { createGunAudio } from './gunAudio.js';
 import { MAX_ARMOR, MAX_GRENADES, MAX_MINES } from './combatLoot.js';
 import { createExplosiveMesh, createExplosivePresentation } from './explosivePresentation.js';
+import { bindPointerAction } from './pointerAction.js';
 
 // Project-created firearm fallbacks, hands, effects, and audio share this
 // presenter with two optional CC0 gun models credited in public/assets/combat/.
@@ -1173,13 +1174,13 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
   for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
     fireButton.addEventListener(type, releaseTrigger);
   }
-  reloadButton.addEventListener('click', handleReload);
-  wheelButton.addEventListener('click', handleWheelButton);
-  respawnButton.addEventListener('click', (event) => {
+  const actionDisposers = [bindPointerAction(reloadButton, handleReload),
+    bindPointerAction(wheelButton, handleWheelButton),
+    bindPointerAction(aimButton, handleAimToggle)];
+  actionDisposers.push(bindPointerAction(respawnButton, (event) => {
     event.preventDefault();
     if (state.dead && state.serverNow >= state.respawnAt) onRespawn();
-  });
-  aimButton.addEventListener('click', handleAimToggle);
+  }));
   for (let index = 0; index < slotButtons.length; index += 1) {
     slotButtons[index].addEventListener('pointerenter', () => {
       if (!wheelOpen) return;
@@ -1188,13 +1189,13 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
       wheelHighlight = slot.id;
       renderHud();
     });
-    slotButtons[index].addEventListener('click', (event) => {
+    actionDisposers.push(bindPointerAction(slotButtons[index], (event) => {
       event.preventDefault();
       const slot = equipmentSlots(inventory)[index];
       if (!slot?.id || slot.count <= 0) return;
       wheelHighlight = slot.id;
       closeEquipmentWheel({ commit: true });
-    });
+    }));
   }
 
   function renderHud() {
@@ -1695,6 +1696,7 @@ export function createCombatPresentation({ camera, scene, root = globalThis.docu
     clearAiming();
     cancelReloadPresentation();
     disposed = true;
+    for (const unbind of actionDisposers) unbind();
     hud.remove();
     if (oldCrosshair) oldCrosshair.style.opacity = previousCrosshairOpacity;
     camera.remove(viewRoot);
